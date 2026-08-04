@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      2.7.0
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con emulación exacta de zoom nativo del navegador, modal de configuración expandido de lectura clara, parches de precisión multielemento y actualización automática desde GitHub.
+// @version      2.7.1
+// @description  Reducción dinámica del tamaño de página por proporción o umbrales con alineación precisa de encabezados, prevención de desbordamientos, modal de configuración expandido de lectura clara y actualización automática desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,12 +16,12 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.7.0
+ * Auto-Shrink Userscript v2.7.1
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en servicios independientes (ConfigurationService,
  * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
- * Diseñado para emular de forma exacta el comportamiento del zoom nativo del navegador (como el 60% nativo de Firefox),
- * eliminando por completo espacios en blanco laterales e inferiores y garantizando la ejecucion continua en el 100% de los sitios web.
+ * Diseñado para reducir dinámicamente las páginas web sin romper encabezados ni ocultar elementos
+ * (como la foto de perfil en GitHub), garantizando la ejecución continua en el 100% de los sitios web.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -341,7 +341,7 @@
     }
 
     /**
-     * Aplica las reglas CSS de maquetación de zoom nativo y compatibilidad.
+     * Aplica las reglas CSS de maquetación fluida sin desbordamientos laterales.
      */
     function applyProtectionStyles() {
       patchMouseCoordinatesInWindow();
@@ -355,10 +355,9 @@
         if (document.getElementById(MEDIA_PROTECTION_STYLE_ID)) return;
 
         const mediaProtectionCss = `
-          /* Emulacion de Zoom Nativo: Ancho y alto extendido para eliminar espacios en blanco */
+          /* Preservación de maquetación fluida sin desbordamientos de encabezados fijos */
           html {
-            width: calc(100% / var(--auto-shrink-scale, 1)) !important;
-            min-height: calc(100vh / var(--auto-shrink-scale, 1)) !important;
+            min-height: 100% !important;
             box-sizing: border-box !important;
           }
           
@@ -466,10 +465,6 @@
         const zoomScaleString = zoomScaleFactor.toFixed(4);
         const inverseScaleString = (1 / zoomScaleFactor).toFixed(4);
 
-        // Calcular dimensiones de maquetacion para emular zoom nativo sin espacios blancos
-        const layoutWidthPercentString = (100 / zoomScaleFactor).toFixed(4) + '%';
-        const layoutMinHeightVhString = (100 / zoomScaleFactor).toFixed(4) + 'vh';
-
         MediaProtectionService.setScaleFactor(zoomScaleFactor);
 
         if (lastAppliedZoomScaleString === zoomScaleString && rootElement.style.zoom === zoomScaleString) {
@@ -478,11 +473,11 @@
 
         isScriptApplyingZoomMutation = true;
         try {
-          // Asignar variables CSS de escala e instruir al navegador a expandir el viewport de maquetacion
+          // Asignar variables CSS de escala sin forzar anchos que desplacen encabezados fijos
           rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
           rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
-          rootElement.style.setProperty('width', layoutWidthPercentString, 'important');
-          rootElement.style.setProperty('min-height', layoutMinHeightVhString, 'important');
+          rootElement.style.removeProperty('width');
+          rootElement.style.removeProperty('min-height');
 
           if (ConfigurationService.get('isSmoothTransitionEnabled')) {
             if (!rootElement.style.transition.includes('zoom')) {
@@ -775,7 +770,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.7.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.7.1</span>
             </h2>
 
             <!-- SECCIÓN: REPRODUCTORES DE VIDEO Y PANTALLA COMPLETA -->
