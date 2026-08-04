@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      2.7.1
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con alineación precisa de encabezados, prevención de desbordamientos, modal de configuración expandido de lectura clara y actualización automática desde GitHub.
+// @version      2.8.0
+// @description  Reducción dinámica del tamaño de página por proporción o umbrales con adaptación inteligente para vista dividida (Split View), alineación de encabezados, modal expandido y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,12 +16,12 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.7.1
+ * Auto-Shrink Userscript v2.8.0
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en servicios independientes (ConfigurationService,
  * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
- * Diseñado para reducir dinámicamente las páginas web sin romper encabezados ni ocultar elementos
- * (como la foto de perfil en GitHub), garantizando la ejecución continua en el 100% de los sitios web.
+ * Incluye adaptación inteligente para vista dividida (Split View / Split Tabs en Firefox, Chrome, Edge y Windows Snap),
+ * permitiendo que las pestañas en pantalla dividida se visualicen a tamaño cómodo nativo (100%) sin encoger excesivamente.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -63,7 +63,8 @@
     thresholdZoomLevelUnder20Percent: 0.35,
     isSmoothTransitionEnabled: false,
     isProtectVideoPlayersEnabled: true,
-    isResetInFullscreenEnabled: true
+    isResetInFullscreenEnabled: true,
+    isSplitViewAdaptationEnabled: true
   });
 
   const CONFIGURATION_MODAL_OVERLAY_ID = 'auto-shrink-configuration-modal-overlay-v2';
@@ -164,10 +165,11 @@
    */
   const ViewportMetricsService = (function () {
     /**
-     * Calcula el ancho base de la pantalla en píxeles.
-     * @returns {number} Ancho en píxeles.
+     * Calcula el ancho base de la pantalla en píxeles, adaptándose dinámicamente si la ventana está en vista dividida.
+     * @param {number} [currentViewportWidthPx] - Ancho actual del viewport.
+     * @returns {number} Ancho base de referencia en píxeles.
      */
-    function calculateReferenceBaseWidth() {
+    function calculateReferenceBaseWidth(currentViewportWidthPx) {
       try {
         const setting = ConfigurationService.get('referenceBaseWidthSetting');
         if (typeof setting === 'number' && setting > 0) return setting;
@@ -175,7 +177,18 @@
           const parsed = parseInt(setting, 10);
           if (Number.isFinite(parsed) && parsed > 0) return parsed;
         }
-        return (window.screen && window.screen.width) ? window.screen.width : 1920;
+
+        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+
+        // Adaptación inteligente para vista dividida (Split View / Split Tabs)
+        if (ConfigurationService.get('isSplitViewAdaptationEnabled') && currentViewportWidthPx) {
+          // Si el panel de la ventana ocupa el 75% o menos del monitor (ejemplo: vista dividida al 50%):
+          if (currentViewportWidthPx <= monitorWidth * 0.75) {
+            return monitorWidth / 2;
+          }
+        }
+
+        return monitorWidth;
       } catch (e) {
         return 1920;
       }
@@ -458,7 +471,7 @@
         const currentViewportWidthPx = getValidViewportWidth();
         if (!currentViewportWidthPx) return;
 
-        const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth();
+        const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
         if (!referenceBaseWidthPx) return;
 
         const zoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx);
@@ -770,13 +783,17 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.7.1</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.8.0</span>
             </h2>
 
-            <!-- SECCIÓN: REPRODUCTORES DE VIDEO Y PANTALLA COMPLETA -->
+            <!-- SECCIÓN: VISTA DIVIDIDA Y PANTALLA COMPLETA -->
             <div class="as-config-section">
-              <div class="as-section-title">Compatibilidad de Video y Cursor</div>
+              <div class="as-section-title">Vista Dividida y Compatibilidad</div>
               <div class="as-field-group">
+                <label class="as-checkbox-label">
+                  <input type="checkbox" id="as-checkbox-split-view" ${ConfigurationService.get('isSplitViewAdaptationEnabled') ? 'checked' : ''}>
+                  📱 Adaptación Inteligente para Vista Dividida (Firefox / Chrome / Edge / Windows Snap)
+                </label>
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-protect-video" ${ConfigurationService.get('isProtectVideoPlayersEnabled') ? 'checked' : ''}>
                   🛡️ Corregir precisión del ratón en reproductores, controles y deslizadores
@@ -930,6 +947,7 @@
           const isSmooth = overlayElement.querySelector('#as-checkbox-smooth-transition').checked;
           const isProtect = overlayElement.querySelector('#as-checkbox-protect-video').checked;
           const isFullscreen = overlayElement.querySelector('#as-checkbox-reset-fullscreen').checked;
+          const isSplitView = overlayElement.querySelector('#as-checkbox-split-view').checked;
 
           ConfigurationService.set('scalingMode', modeVal);
           ConfigurationService.set('referenceBaseWidthSetting', baseVal);
@@ -942,6 +960,7 @@
           ConfigurationService.set('isSmoothTransitionEnabled', isSmooth);
           ConfigurationService.set('isProtectVideoPlayersEnabled', isProtect);
           ConfigurationService.set('isResetInFullscreenEnabled', isFullscreen);
+          ConfigurationService.set('isSplitViewAdaptationEnabled', isSplitView);
 
           MediaProtectionService.applyProtectionStyles();
           ZoomExecutionEngine.applyViewportZoomScale();
@@ -971,7 +990,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.7', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.8', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
