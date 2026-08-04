@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.0.0
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con emulación de zoom nativo de Chrome/Firefox, bloqueo anti-sobrescalado, adaptación de límites en vista dividida y precisión del puntero.
+// @version      3.1.0
+// @description  Reducción dinámica del tamaño de página con estabilización visual para multitarea y vista dividida, emulación de zoom nativo, bloqueo anti-sobrescalado y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,13 +16,13 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.0.0 - Motor de Escalado Inteligente
+ * Auto-Shrink Userscript v3.1.0 - Motor de Estabilización Visual y Adaptación Multitarea
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en 5 servicios avanzados:
  * 1. ConfigurationService: Manejo de caché inmutable, saneamiento y validación cruzada min <= max.
  * 2. ViewportMetricsService: Detección inteligente de vista dividida y cálculo de límites dinámicos.
- * 3. MediaProtectionService: Detección de motor (Gecko/Blink) e inyección de reglas CSS para puntero 1:1.
- * 4. ZoomExecutionEngine: Bloqueo anti-sobrescalado, emulación de zoom nativo y sincronización por cuadros.
+ * 3. MediaProtectionService: Estabilización de maquetación responsiva para multitarea y puntero 1:1.
+ * 4. ZoomExecutionEngine: Bloqueo anti-sobrescalado, variables CSS globales y zoom nativo sin parpadeos.
  * 5. UserInterfaceController: Modal expandido con indicador de estado en tiempo real y vista previa instantánea.
  */
 (function initializeAutoShrinkScriptScope() {
@@ -110,14 +110,14 @@
     }
 
     /**
-     * MEJORA 1: Retorna una instantánea validada, de tipos seguros e inmutable de la configuración activa.
+     * Retorna una instantánea validada, de tipos seguros e inmutable de la configuración activa.
      * @returns {Object} Configuración saneada inmutable.
      */
     function getSanitizedConfig() {
       const minLimit = sanitizeNumeric(get('minimumZoomScaleLimit'), 0.20, 0.05, 1.00);
       const rawMax = sanitizeNumeric(get('maximumZoomScaleLimit'), 1.00, 0.50, 2.00);
       
-      // MEJORA 2: Validación cruzada estricta (min <= max)
+      // Validación cruzada estricta (min <= max)
       const maxLimit = Math.max(minLimit, rawMax);
 
       return Object.freeze({
@@ -197,7 +197,7 @@
   const ViewportMetricsService = (function () {
 
     /**
-     * MEJORA 1: Analiza la dimensión del viewport frente a la pantalla e identifica si está en vista dividida.
+     * Analiza la dimensión del viewport frente a la pantalla e identifica si está en vista dividida o acoplada.
      * @param {number} currentViewportWidthPx - Ancho del viewport en píxeles.
      * @param {number} monitorWidth - Ancho del monitor en píxeles.
      * @returns {Object} Contexto detallado de vista dividida.
@@ -215,7 +215,7 @@
     }
 
     /**
-     * MEJORA 2: Recalcula dinámicamente los límites de zoom mínimo y máximo para vista dividida.
+     * Recalcula dinámicamente los límites de zoom mínimo y máximo para vista dividida.
      * Evita que pestañas divididas se reduzcan a tamaños diminutos e ilegibles.
      * @param {number} userMin - Zoom mínimo configurado por el usuario.
      * @param {number} userMax - Zoom máximo configurado por el usuario.
@@ -302,8 +302,8 @@
   // ============================================================================
 
   /**
-   * Servicio encargado de la compatibilidad por motor del navegador (Gecko vs Blink)
-   * y la inyección de reglas CSS para garantizar precisión 1:1 en eventos de puntero.
+   * Servicio encargado de la estabilización visual de maquetación para multitarea,
+   * compatibilidad por motor (Gecko vs Blink) y precisión del puntero 1:1.
    */
   const MediaProtectionService = (function () {
     let currentActiveScaleFactor = 1.0;
@@ -313,7 +313,7 @@
     }
 
     /**
-     * MEJORA 1: Identifica el motor nativo del navegador para aplicar optimizaciones específicas.
+     * Identifica el motor nativo del navegador para aplicar optimizaciones específicas.
      * @returns {string} 'gecko' (Firefox), 'blink' (Chrome/Edge/Brave) o 'generic'.
      */
     function detectNativeBrowserEngine() {
@@ -343,7 +343,7 @@
     }
 
     /**
-     * MEJORA 2: Inyecta una hoja de estilos mejorada para puntero 1:1 adaptada al motor del navegador.
+     * Inyecta una hoja de estilos de estabilización visual responsiva y multitarea.
      */
     function applyProtectionStyles() {
       try {
@@ -363,13 +363,30 @@
              html { -webkit-font-smoothing: antialiased !important; }`;
 
         const mediaProtectionCss = `
-          /* Preservación de maquetación fluida y orden de apilamiento */
+          /* Preservación de maquetación fluida y orden de apilamiento en multitarea */
           html {
             min-height: 100% !important;
             box-sizing: border-box !important;
           }
 
           ${engineSpecificRules}
+
+          /* Estabilización de contenedores principales para acoplamiento de ventanas y vista dividida */
+          body, #app, #root, #__next, main, article, section, header, footer, nav, .container, .wrapper {
+            max-width: 100% !important;
+          }
+
+          /* Ajuste de elementos fijos para evitar desbordamiento horizontal */
+          [style*="position: fixed"], [style*="position: sticky"],
+          header[class*="header"], nav[class*="nav"], div[class*="top-bar"] {
+            max-width: 100% !important;
+          }
+
+          /* Escalado fluido de medios y elementos embebidos en ventanas estrechas */
+          img, video, iframe, canvas, svg, picture {
+            max-width: 100% !important;
+            object-fit: contain;
+          }
           
           /* Precisión absoluta del puntero en controles interactivos, reproductores y deslizadores */
           .html5-video-player,
@@ -416,7 +433,7 @@
 
   /**
    * Motor de ejecución atómico de zoom. Aplica el bloqueo anti-sobrescalado,
-   * emula zoom nativo y gestiona observadores de mutación y tamaño.
+   * expone variables CSS globales y emula zoom nativo sin parpadeos.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -441,7 +458,7 @@
     }
 
     /**
-     * MEJORA 1: Aplica el bloqueo estricto anti-sobrescalado (Anti-Overzoom Lock).
+     * Aplica el bloqueo estricto anti-sobrescalado (Anti-Overzoom Lock).
      * Si la ventana o el usuario intentan superar el máximo configurado, el motor lo bloquea en el límite.
      * @param {number} rawScale - Escala calculada.
      * @param {number} effectiveMin - Límite mínimo efectivo.
@@ -454,7 +471,7 @@
     }
 
     /**
-     * MEJORA 2: Aplica la escala calculada con redondeo sub-pixel a 4 decimales para eliminar parpadeos de maquetación.
+     * Aplica la escala calculada asignando variables CSS y aplicando zoom nativo.
      */
     function applyViewportZoomScale() {
       if (document.hidden) return;
@@ -473,6 +490,7 @@
             try {
               rootElement.style.setProperty('--auto-shrink-scale', '1');
               rootElement.style.setProperty('--auto-shrink-inv-scale', '1');
+              rootElement.style.setProperty('--auto-shrink-is-split-view', '0');
               rootElement.style.removeProperty('width');
               rootElement.style.removeProperty('min-height');
               rootElement.style.setProperty('zoom', '1.0', 'important');
@@ -512,9 +530,12 @@
 
         isScriptApplyingZoomMutation = true;
         try {
-          // Asignar variables CSS de escala manteniendo sincronía 1:1 en las coordenadas del viewport
+          // Asignar variables CSS de escala e integración dinámica multitarea
           rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
           rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
+          rootElement.style.setProperty('--auto-shrink-viewport-width', currentViewportWidthPx + 'px');
+          rootElement.style.setProperty('--auto-shrink-is-split-view', splitContext.isSplitView ? '1' : '0');
+          rootElement.style.setProperty('--auto-shrink-effective-base', referenceBaseWidthPx + 'px');
           rootElement.style.removeProperty('width');
           rootElement.style.removeProperty('min-height');
 
@@ -810,7 +831,7 @@
     }
 
     /**
-     * MEJORA 1: Renderiza el modal con insignias de estado activo en tiempo real.
+     * Renderiza el modal con insignias de estado activo en tiempo real.
      */
     function renderModal() {
       try {
@@ -834,10 +855,10 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.0.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.1.0</span>
             </h2>
 
-            <!-- MEJORA 1: Insignias de Estado en Tiempo Real -->
+            <!-- Insignias de Estado en Tiempo Real -->
             <div class="as-status-badge-container">
               <div class="as-status-badge">🌐 Motor: ${engine.toUpperCase()}</div>
               <div class="as-status-badge">📱 Vista Dividida: ${splitContext.isSplitView ? 'ACTIVA (50% Base)' : 'Inactiva (Full)'}</div>
@@ -979,7 +1000,6 @@
           destroyModal(overlayElement, listenerBindings);
         };
 
-        // MEJORA 2: Aplicación instantánea de configuración al guardar
         const handleSave = () => {
           const modeVal = scalingModeSelect.value;
           let baseVal = 'auto';
@@ -1049,7 +1069,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.0', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.1', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
