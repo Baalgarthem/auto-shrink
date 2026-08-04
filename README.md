@@ -2,8 +2,12 @@
 
 Auto-Shrink es una herramienta de optimizacion visual desarrollada para la extension Violentmonkey (compatible con Tampermonkey y Greasemonkey). Su proposito es ajustar de forma inteligente el tamano de las paginas web cuando la ventana del navegador se reduce.
 
+- **Repositorio Oficial en GitHub**: [https://github.com/Baalgarthem/auto-shrink](https://github.com/Baalgarthem/auto-shrink)
+- **URL de Descarga Directa**: [https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js](https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js)
+- **Autor**: Baalgarthem
+
 ---
-sasas
+
 ## Ventajas y Beneficios Principales
 
 ### 1. Multitarea y Pantalla Dividida Sin Esfuerzo
@@ -31,7 +35,7 @@ La ventana emergente de opciones se despliega siempre a tamano completo con letr
 ## Guia de Instalacion
 
 1. Instale la extension Violentmonkey en su navegador web.
-2. Abra el archivo `auto-shrink.user.js` y copie todo su codigo fuente.
+2. Descargue o copie el codigo fuente desde [auto-shrink.user.js](https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js).
 3. En el panel de control de Violentmonkey, seleccione la opcion para crear un nuevo script y pegue el codigo.
 4. Guarde el script.
 
@@ -40,6 +44,6 @@ La ventana emergente de opciones se despliega siempre a tamano completo con letr
 ## Guia de Configuracion
 
 1. Haga clic en el icono de la extension Violentmonkey en la barra de herramientas del navegador.
-2. Seleccione la opcion **Configurar Auto-Shrink v2.6**.
+2. Seleccione la opcion **Configurar Auto-Shrink**.
 3. Personalice el modo de escalado y los limites deseados en la ventana emergente.
 4. Presione el boton **Guardar y Aplicar** para almacenar los cambios.
