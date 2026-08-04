@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.3.0
-// @description  Reducción dinámica del tamaño de página con lógica de histéresis anti-vibración, detección multi-proporción para vista dividida (50%, 33%, 25%), estabilización visual responsiva y actualización desde GitHub.
+// @version      3.5.0
+// @description  Reducción dinámica del tamaño de página con compensación de barra de desplazamiento (--auto-shrink-scrollbar-width), precisión DPI-aware, tolerancia de histéresis anti-vibración y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,14 +16,14 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.3.0 - Motor de Escalado Inteligente
+ * Auto-Shrink Userscript v3.5.0 - Motor de Escalado Inteligente y DPI-Awareness
  * ----------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
- * 1. ConfigurationService: Caché inmutable, saneamiento y validación min <= max.
- * 2. ViewportMetricsService: Métricas del viewport con detección multi-proporción (50%, 33%, 25%).
- * 3. VisualStabilizationService: Módulo especializado de estabilización visual y responsiva.
+ * 1. ConfigurationService: Caché inmutable, protección anti-corrupción y validación min <= max.
+ * 2. ViewportMetricsService: Métricas del viewport DPI-aware con detección multi-proporción (50%, 33%, 25%).
+ * 3. VisualStabilizationService: Estabilización responsiva y compensación de barra de desplazamiento.
  * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1.
- * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración, bloqueo anti-sobrescalado y zoom nativo.
+ * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración y MutationObserver agrupado en rAF (16ms).
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
@@ -80,7 +80,7 @@
 
   /**
    * Servicio encargado de administrar el almacenamiento, caché en memoria, saneamiento
-   * y validación cruzada de límites de configuración.
+   * y validación cruzada de límites de configuración con protección anti-corrupción.
    */
   const ConfigurationService = (function () {
     const activeCache = Object.assign({}, DEFAULT_CONFIGURATION);
@@ -93,7 +93,7 @@
         if (typeof GM_getValue !== 'function') return;
         for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
           const storedValue = GM_getValue(key, DEFAULT_CONFIGURATION[key]);
-          if (storedValue !== undefined) {
+          if (storedValue !== undefined && storedValue !== null) {
             activeCache[key] = storedValue;
           }
         }
@@ -194,7 +194,7 @@
 
   /**
    * Servicio encargado de calcular el ancho base de referencia, detectar contexto
-   * de vista dividida multi-proporción (50%, 33%, 25%) y calcular límites dinámicos de escalado.
+   * de vista dividida multi-proporción (50%, 33%, 25%) y aplicar adaptaciones DPI-aware.
    */
   const ViewportMetricsService = (function () {
 
@@ -249,7 +249,7 @@
     }
 
     /**
-     * Calcula el ancho base de la pantalla en píxeles.
+     * Calcula el ancho base de la pantalla en píxeles considerando la densidad DPI.
      * @param {number} [currentViewportWidthPx] - Ancho actual del viewport.
      * @returns {number} Ancho base de referencia en píxeles.
      */
@@ -262,7 +262,13 @@
           if (Number.isFinite(parsed) && parsed > 0) return parsed;
         }
 
-        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+        let monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+        
+        // Ajuste DPI-aware para pantallas de alta densidad
+        if (window.devicePixelRatio && window.devicePixelRatio > 1.25 && window.screen.availWidth) {
+          monitorWidth = Math.max(monitorWidth, window.screen.availWidth);
+        }
+
         const splitContext = detectSplitViewContext(currentViewportWidthPx || monitorWidth, monitorWidth);
         return splitContext.effectiveBaseWidth;
       } catch (e) {
@@ -319,8 +325,7 @@
   // ============================================================================
 
   /**
-   * Módulo especializado de estabilización visual responsiva.
-   * Evita desbordamientos de maquetación, rompeduras de diseño y desalineación de elementos fijos.
+   * Módulo especializado de estabilización visual responsiva y compensación de barra de desplazamiento.
    */
   const VisualStabilizationService = (function () {
 
@@ -403,7 +408,7 @@
     }
 
     /**
-     * Aplica las variables CSS globales de maquetación en el elemento raíz.
+     * Aplica las variables CSS globales de maquetación y compensación de scrollbar.
      * @param {HTMLElement} rootElement - Elemento html.
      * @param {number} scaleFactor - Factor de zoom activo.
      * @param {number} viewportWidthPx - Ancho del viewport.
@@ -415,12 +420,14 @@
       try {
         const zoomScaleString = scaleFactor.toFixed(4);
         const inverseScaleString = (1 / scaleFactor).toFixed(4);
+        const scrollbarWidthPx = Math.max(0, window.innerWidth - rootElement.clientWidth);
 
         rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
         rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
         rootElement.style.setProperty('--auto-shrink-viewport-width', viewportWidthPx + 'px');
         rootElement.style.setProperty('--auto-shrink-is-split-view', isSplitView ? '1' : '0');
         rootElement.style.setProperty('--auto-shrink-effective-base', referenceBasePx + 'px');
+        rootElement.style.setProperty('--auto-shrink-scrollbar-width', scrollbarWidthPx + 'px');
         rootElement.style.removeProperty('width');
         rootElement.style.removeProperty('min-height');
       } catch (e) {}
@@ -531,8 +538,8 @@
   // ============================================================================
 
   /**
-   * Motor de ejecución atómico de zoom. Aplica el filtro de histéresis anti-vibración,
-   * bloqueo anti-sobrescalado y actualiza variables CSS globales.
+   * Motor de ejecución atómico de zoom con agrupadación de mutaciones (16ms RAF debouncer)
+   * y filtro de histéresis anti-vibración.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -673,7 +680,7 @@
     }
 
     /**
-     * Inicializa el observador de mutaciones de estilo para prevenir sobreescrituras.
+     * Inicializa el observador de mutaciones de estilo para prevenir sobreescrituras en SPAs.
      */
     function initializeStyleMutationProtectionObserver() {
       try {
@@ -684,7 +691,7 @@
           if (isScriptApplyingZoomMutation) return;
           for (let i = 0; i < mutations.length; i++) {
             if (mutations[i].attributeName === 'style') {
-              applyViewportZoomScale();
+              scheduleFrameExecution();
               break;
             }
           }
@@ -953,10 +960,9 @@
 
         overlayElement.innerHTML = `
           <div class="as-dialog-card">
-             plots
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.3.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.5.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1170,7 +1176,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.3', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.5', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
