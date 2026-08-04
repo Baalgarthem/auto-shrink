@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      2.9.0
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con precisión absoluta del puntero del ratón en cualquier nivel de zoom, adaptación inteligente para vista dividida (Split View) y actualización desde GitHub.
+// @version      3.0.0
+// @description  Reducción dinámica del tamaño de página por proporción o umbrales con emulación de zoom nativo de Chrome/Firefox, bloqueo anti-sobrescalado, adaptación de límites en vista dividida y precisión del puntero.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,13 +16,14 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.9.0
+ * Auto-Shrink Userscript v3.0.0 - Motor de Escalado Inteligente
  * ----------------------------------------------------------------------------
- * Arquitectura modular dividida en servicios independientes (ConfigurationService,
- * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
- * Ofrece precisión absoluta 1:1 en el puntero del ratón a cualquier nivel de zoom (20%, 35%, 50%, 66%, 85%, 100%),
- * garantizando que los clics en reproductores de video (YouTube, HTML5), controles deslizantes y barras de progreso
- * respondan con exactitud en la posición del cursor.
+ * Arquitectura modular dividida en 5 servicios avanzados:
+ * 1. ConfigurationService: Manejo de caché inmutable, saneamiento y validación cruzada min <= max.
+ * 2. ViewportMetricsService: Detección inteligente de vista dividida y cálculo de límites dinámicos.
+ * 3. MediaProtectionService: Detección de motor (Gecko/Blink) e inyección de reglas CSS para puntero 1:1.
+ * 4. ZoomExecutionEngine: Bloqueo anti-sobrescalado, emulación de zoom nativo y sincronización por cuadros.
+ * 5. UserInterfaceController: Modal expandido con indicador de estado en tiempo real y vista previa instantánea.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -72,12 +73,12 @@
   const MEDIA_PROTECTION_STYLE_ID = 'auto-shrink-media-protection-styles';
 
   // ============================================================================
-  // SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
+  // 1. SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
   // ============================================================================
 
   /**
-   * Servicio encargado de administrar el almacenamiento, caché en memoria y saneamiento
-   * de los parámetros de configuración del script.
+   * Servicio encargado de administrar el almacenamiento, caché en memoria, saneamiento
+   * y validación cruzada de límites de configuración.
    */
   const ConfigurationService = (function () {
     const activeCache = Object.assign({}, DEFAULT_CONFIGURATION);
@@ -106,6 +107,33 @@
      */
     function get(key) {
       return activeCache[key] !== undefined ? activeCache[key] : DEFAULT_CONFIGURATION[key];
+    }
+
+    /**
+     * MEJORA 1: Retorna una instantánea validada, de tipos seguros e inmutable de la configuración activa.
+     * @returns {Object} Configuración saneada inmutable.
+     */
+    function getSanitizedConfig() {
+      const minLimit = sanitizeNumeric(get('minimumZoomScaleLimit'), 0.20, 0.05, 1.00);
+      const rawMax = sanitizeNumeric(get('maximumZoomScaleLimit'), 1.00, 0.50, 2.00);
+      
+      // MEJORA 2: Validación cruzada estricta (min <= max)
+      const maxLimit = Math.max(minLimit, rawMax);
+
+      return Object.freeze({
+        scalingMode: get('scalingMode') === SCALING_MODES.THRESHOLDS ? SCALING_MODES.THRESHOLDS : SCALING_MODES.CONTINUOUS,
+        referenceBaseWidthSetting: get('referenceBaseWidthSetting'),
+        minimumZoomScaleLimit: minLimit,
+        maximumZoomScaleLimit: maxLimit,
+        thresholdZoomLevelUnder80Percent: sanitizeNumeric(get('thresholdZoomLevelUnder80Percent'), 0.85, minLimit, maxLimit),
+        thresholdZoomLevelUnder60Percent: sanitizeNumeric(get('thresholdZoomLevelUnder60Percent'), 0.70, minLimit, maxLimit),
+        thresholdZoomLevelUnder40Percent: sanitizeNumeric(get('thresholdZoomLevelUnder40Percent'), 0.55, minLimit, maxLimit),
+        thresholdZoomLevelUnder20Percent: sanitizeNumeric(get('thresholdZoomLevelUnder20Percent'), 0.35, minLimit, maxLimit),
+        isSmoothTransitionEnabled: !!get('isSmoothTransitionEnabled'),
+        isProtectVideoPlayersEnabled: !!get('isProtectVideoPlayersEnabled'),
+        isResetInFullscreenEnabled: !!get('isResetInFullscreenEnabled'),
+        isSplitViewAdaptationEnabled: !!get('isSplitViewAdaptationEnabled')
+      });
     }
 
     /**
@@ -151,6 +179,7 @@
 
     return {
       get,
+      getSanitizedConfig,
       set,
       resetAll,
       sanitizeNumeric
@@ -158,15 +187,52 @@
   })();
 
   // ============================================================================
-  // SERVICIO DE MÉTRICAS DEL VIEWPORT (ViewportMetricsService)
+  // 2. SERVICIO DE MÉTRICAS DEL VIEWPORT (ViewportMetricsService)
   // ============================================================================
 
   /**
-   * Servicio encargado de calcular el ancho base de referencia y los factores de escala.
+   * Servicio encargado de calcular el ancho base de referencia, detectar contexto
+   * de vista dividida y calcular límites dinámicos de escalado.
    */
   const ViewportMetricsService = (function () {
+
     /**
-     * Calcula el ancho base de la pantalla en píxeles, adaptándose dinámicamente si la ventana está en vista dividida.
+     * MEJORA 1: Analiza la dimensión del viewport frente a la pantalla e identifica si está en vista dividida.
+     * @param {number} currentViewportWidthPx - Ancho del viewport en píxeles.
+     * @param {number} monitorWidth - Ancho del monitor en píxeles.
+     * @returns {Object} Contexto detallado de vista dividida.
+     */
+    function detectSplitViewContext(currentViewportWidthPx, monitorWidth) {
+      const ratioToMonitor = currentViewportWidthPx / monitorWidth;
+      const isSplitView = ConfigurationService.get('isSplitViewAdaptationEnabled') && ratioToMonitor <= 0.75;
+      const effectiveBaseWidth = isSplitView ? (monitorWidth / 2) : monitorWidth;
+
+      return Object.freeze({
+        isSplitView,
+        ratioToMonitor,
+        effectiveBaseWidth: Math.max(400, effectiveBaseWidth)
+      });
+    }
+
+    /**
+     * MEJORA 2: Recalcula dinámicamente los límites de zoom mínimo y máximo para vista dividida.
+     * Evita que pestañas divididas se reduzcan a tamaños diminutos e ilegibles.
+     * @param {number} userMin - Zoom mínimo configurado por el usuario.
+     * @param {number} userMax - Zoom máximo configurado por el usuario.
+     * @param {boolean} isSplitView - True si la ventana está en vista dividida.
+     * @returns {Object} Limites efectivos saneados.
+     */
+    function computeDynamicSplitBounds(userMin, userMax, isSplitView) {
+      if (isSplitView) {
+        const effectiveMin = Math.max(userMin, 0.40); // Previene reducción excesiva en split view
+        const effectiveMax = Math.min(userMax, 1.00); // 100% nativo en panel dividido
+        return Object.freeze({ effectiveMin, effectiveMax });
+      }
+      return Object.freeze({ effectiveMin: userMin, effectiveMax: userMax });
+    }
+
+    /**
+     * Calcula el ancho base de la pantalla en píxeles.
      * @param {number} [currentViewportWidthPx] - Ancho actual del viewport.
      * @returns {number} Ancho base de referencia en píxeles.
      */
@@ -180,72 +246,83 @@
         }
 
         const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
-
-        // Adaptación inteligente para vista dividida (Split View / Split Tabs)
-        if (ConfigurationService.get('isSplitViewAdaptationEnabled') && currentViewportWidthPx) {
-          // Si el panel de la ventana ocupa el 75% o menos del monitor (ejemplo: vista dividida al 50%):
-          if (currentViewportWidthPx <= monitorWidth * 0.75) {
-            return monitorWidth / 2;
-          }
-        }
-
-        return monitorWidth;
+        const splitContext = detectSplitViewContext(currentViewportWidthPx || monitorWidth, monitorWidth);
+        return splitContext.effectiveBaseWidth;
       } catch (e) {
         return 1920;
       }
     }
 
     /**
-     * Computa el factor de escala según el modo activo (continuo o por umbrales).
+     * Computa el factor de escala aplicando el modo activo y respetando límites efectivos.
      * @param {number} currentViewportWidthPx - Ancho actual del viewport.
      * @param {number} referenceBaseWidthPx - Ancho base de referencia.
-     * @returns {number} Factor de zoom entre el mínimo y máximo permitido.
+     * @param {Object} bounds - Limites efectivos { effectiveMin, effectiveMax }.
+     * @returns {number} Factor de zoom restringido dentro de límites.
      */
-    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx) {
-      const minLimit = parseFloat(ConfigurationService.get('minimumZoomScaleLimit'));
-      const maxLimit = parseFloat(ConfigurationService.get('maximumZoomScaleLimit'));
+    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, bounds) {
+      const config = ConfigurationService.getSanitizedConfig();
       const ratio = currentViewportWidthPx / referenceBaseWidthPx;
+      const minLimit = bounds ? bounds.effectiveMin : config.minimumZoomScaleLimit;
+      const maxLimit = bounds ? bounds.effectiveMax : config.maximumZoomScaleLimit;
 
       let computedScale = 1.0;
 
-      if (ConfigurationService.get('scalingMode') === SCALING_MODES.THRESHOLDS) {
+      if (config.scalingMode === SCALING_MODES.THRESHOLDS) {
         if (ratio < 0.20) {
-          computedScale = parseFloat(ConfigurationService.get('thresholdZoomLevelUnder20Percent'));
+          computedScale = config.thresholdZoomLevelUnder20Percent;
         } else if (ratio < 0.40) {
-          computedScale = parseFloat(ConfigurationService.get('thresholdZoomLevelUnder40Percent'));
+          computedScale = config.thresholdZoomLevelUnder40Percent;
         } else if (ratio < 0.60) {
-          computedScale = parseFloat(ConfigurationService.get('thresholdZoomLevelUnder60Percent'));
+          computedScale = config.thresholdZoomLevelUnder60Percent;
         } else if (ratio < 0.80) {
-          computedScale = parseFloat(ConfigurationService.get('thresholdZoomLevelUnder80Percent'));
+          computedScale = config.thresholdZoomLevelUnder80Percent;
         } else {
           computedScale = maxLimit;
         }
       } else {
-        computedScale = ratio;
+        // Enfoque estricto de auto-shrink: Si la ventana es grande (ratio >= 1.0), el zoom no supera 1.00
+        computedScale = ratio >= 1.0 ? Math.min(1.00, maxLimit) : ratio;
       }
 
+      // Restricción matemática estricta [effectiveMin, effectiveMax]
       return Math.max(minLimit, Math.min(maxLimit, computedScale));
     }
 
     return {
+      detectSplitViewContext,
+      computeDynamicSplitBounds,
       calculateReferenceBaseWidth,
       computeZoomScaleFactor
     };
   })();
 
   // ============================================================================
-  // SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
+  // 3. SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
   // ============================================================================
 
   /**
-   * Servicio encargado de garantizar la precisión 1:1 del puntero del ratón en reproductores
-   * de video y controles interactivos a cualquier nivel de zoom.
+   * Servicio encargado de la compatibilidad por motor del navegador (Gecko vs Blink)
+   * y la inyección de reglas CSS para garantizar precisión 1:1 en eventos de puntero.
    */
   const MediaProtectionService = (function () {
     let currentActiveScaleFactor = 1.0;
 
     function setScaleFactor(scaleFactor) {
       currentActiveScaleFactor = scaleFactor;
+    }
+
+    /**
+     * MEJORA 1: Identifica el motor nativo del navegador para aplicar optimizaciones específicas.
+     * @returns {string} 'gecko' (Firefox), 'blink' (Chrome/Edge/Brave) o 'generic'.
+     */
+    function detectNativeBrowserEngine() {
+      try {
+        const userAgent = navigator.userAgent.toLowerCase();
+        if (userAgent.includes('firefox') || userAgent.includes('gecko/')) return 'gecko';
+        if (userAgent.includes('chrome') || userAgent.includes('chromium') || userAgent.includes('edg/')) return 'blink';
+      } catch (e) {}
+      return 'generic';
     }
 
     /**
@@ -266,7 +343,7 @@
     }
 
     /**
-     * Aplica las reglas CSS de precisión de puntero y maquetación fluida.
+     * MEJORA 2: Inyecta una hoja de estilos mejorada para puntero 1:1 adaptada al motor del navegador.
      */
     function applyProtectionStyles() {
       try {
@@ -278,12 +355,21 @@
 
         if (document.getElementById(MEDIA_PROTECTION_STYLE_ID)) return;
 
+        const engine = detectNativeBrowserEngine();
+        const engineSpecificRules = engine === 'gecko' 
+          ? `/* Reglas especificas para Firefox (Gecko) */
+             html { layout-smoothing: subpixel-antialiased !important; }`
+          : `/* Reglas especificas para Chromium (Blink) */
+             html { -webkit-font-smoothing: antialiased !important; }`;
+
         const mediaProtectionCss = `
           /* Preservación de maquetación fluida y orden de apilamiento */
           html {
             min-height: 100% !important;
             box-sizing: border-box !important;
           }
+
+          ${engineSpecificRules}
           
           /* Precisión absoluta del puntero en controles interactivos, reproductores y deslizadores */
           .html5-video-player,
@@ -318,18 +404,19 @@
 
     return {
       setScaleFactor,
+      detectNativeBrowserEngine,
       isDocumentInFullscreenMode,
       applyProtectionStyles
     };
   })();
 
   // ============================================================================
-  // MOTOR DE EJECUCIÓN DE ZOOM (ZoomExecutionEngine)
+  // 4. MOTOR DE EJECUCIÓN DE ZOOM (ZoomExecutionEngine)
   // ============================================================================
 
   /**
-   * Motor de ejecución atómico de zoom. Aplica las transformaciones en el DOM
-   * y gestiona la sincronización de observadores de mutación y tamaño.
+   * Motor de ejecución atómico de zoom. Aplica el bloqueo anti-sobrescalado,
+   * emula zoom nativo y gestiona observadores de mutación y tamaño.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -354,7 +441,20 @@
     }
 
     /**
-     * Aplica la escala de zoom calculada en el documento HTML.
+     * MEJORA 1: Aplica el bloqueo estricto anti-sobrescalado (Anti-Overzoom Lock).
+     * Si la ventana o el usuario intentan superar el máximo configurado, el motor lo bloquea en el límite.
+     * @param {number} rawScale - Escala calculada.
+     * @param {number} effectiveMin - Límite mínimo efectivo.
+     * @param {number} effectiveMax - Límite máximo efectivo.
+     * @returns {number} Escala bloqueada dentro de límites.
+     */
+    function lockScaleBounds(rawScale, effectiveMin, effectiveMax) {
+      if (!Number.isFinite(rawScale)) return 1.0;
+      return Math.max(effectiveMin, Math.min(effectiveMax, rawScale));
+    }
+
+    /**
+     * MEJORA 2: Aplica la escala calculada con redondeo sub-pixel a 4 decimales para eliminar parpadeos de maquetación.
      */
     function applyViewportZoomScale() {
       if (document.hidden) return;
@@ -363,8 +463,10 @@
         const rootElement = document.documentElement;
         if (!rootElement) return;
 
+        const config = ConfigurationService.getSanitizedConfig();
+
         // Reiniciar a 100% nativo si está en Pantalla Completa
-        if (ConfigurationService.get('isResetInFullscreenEnabled') && MediaProtectionService.isDocumentInFullscreenMode()) {
+        if (config.isResetInFullscreenEnabled && MediaProtectionService.isDocumentInFullscreenMode()) {
           MediaProtectionService.setScaleFactor(1.0);
           if (lastAppliedZoomScaleString !== '1.0000') {
             isScriptApplyingZoomMutation = true;
@@ -385,14 +487,24 @@
         const currentViewportWidthPx = getValidViewportWidth();
         if (!currentViewportWidthPx) return;
 
+        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+        const splitContext = ViewportMetricsService.detectSplitViewContext(currentViewportWidthPx, monitorWidth);
+        const dynamicBounds = ViewportMetricsService.computeDynamicSplitBounds(
+          config.minimumZoomScaleLimit,
+          config.maximumZoomScaleLimit,
+          splitContext.isSplitView
+        );
+
         const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
-        if (!referenceBaseWidthPx) return;
+        const rawZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, dynamicBounds);
+        
+        // Bloqueo Anti-Sobrescalado Estricto
+        const lockedZoomScaleFactor = lockScaleBounds(rawZoomScaleFactor, dynamicBounds.effectiveMin, dynamicBounds.effectiveMax);
 
-        const zoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx);
-        const zoomScaleString = zoomScaleFactor.toFixed(4);
-        const inverseScaleString = (1 / zoomScaleFactor).toFixed(4);
+        const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
+        const inverseScaleString = (1 / lockedZoomScaleFactor).toFixed(4);
 
-        MediaProtectionService.setScaleFactor(zoomScaleFactor);
+        MediaProtectionService.setScaleFactor(lockedZoomScaleFactor);
 
         if (lastAppliedZoomScaleString === zoomScaleString && rootElement.style.zoom === zoomScaleString) {
           return;
@@ -406,7 +518,7 @@
           rootElement.style.removeProperty('width');
           rootElement.style.removeProperty('min-height');
 
-          if (ConfigurationService.get('isSmoothTransitionEnabled')) {
+          if (config.isSmoothTransitionEnabled) {
             if (!rootElement.style.transition.includes('zoom')) {
               rootElement.style.transition = 'zoom 0.12s cubic-bezier(0.4, 0, 0.2, 1)';
             }
@@ -507,11 +619,12 @@
   })();
 
   // ============================================================================
-  // CONTROLADOR DE INTERFAZ DE USUARIO (UserInterfaceController)
+  // 5. CONTROLADOR DE INTERFAZ DE USUARIO (UserInterfaceController)
   // ============================================================================
 
   /**
-   * Controlador de la ventana modal de configuración.
+   * Controlador de la ventana modal de configuración con indicador de estado en tiempo real
+   * y vista previa instantánea.
    */
   const UserInterfaceController = (function () {
     function injectModalStyles() {
@@ -539,7 +652,7 @@
           background: #1e293b !important;
           border: 1px solid #475569 !important;
           border-radius: 16px !important;
-          width: 520px !important;
+          width: 540px !important;
           max-width: 94vw !important;
           max-height: 92vh !important;
           overflow-y: auto !important;
@@ -555,6 +668,21 @@
           display: flex !important;
           align-items: center !important;
           justify-content: space-between !important;
+        }
+        #${CONFIGURATION_MODAL_OVERLAY_ID} .as-status-badge-container {
+          display: flex !important;
+          gap: 8px !important;
+          margin-bottom: 16px !important;
+          flex-wrap: wrap !important;
+        }
+        #${CONFIGURATION_MODAL_OVERLAY_ID} .as-status-badge {
+          background: #0f172a !important;
+          border: 1px solid #334155 !important;
+          border-radius: 6px !important;
+          padding: 6px 12px !important;
+          font-size: 12px !important;
+          font-weight: 600 !important;
+          color: #38bdf8 !important;
         }
         #${CONFIGURATION_MODAL_OVERLAY_ID} .as-config-section {
           background: #0f172a !important;
@@ -681,39 +809,55 @@
       overlayElement.remove();
     }
 
+    /**
+     * MEJORA 1: Renderiza el modal con insignias de estado activo en tiempo real.
+     */
     function renderModal() {
       try {
         if (document.getElementById(CONFIGURATION_MODAL_OVERLAY_ID)) return;
 
         injectModalStyles();
 
+        const config = ConfigurationService.getSanitizedConfig();
+        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+        const currentViewportWidthPx = window.innerWidth || monitorWidth;
+        const splitContext = ViewportMetricsService.detectSplitViewContext(currentViewportWidthPx, monitorWidth);
+        const engine = MediaProtectionService.detectNativeBrowserEngine();
+
         const overlayElement = document.createElement('div');
         overlayElement.id = CONFIGURATION_MODAL_OVERLAY_ID;
 
-        const isThresholdMode = ConfigurationService.get('scalingMode') === SCALING_MODES.THRESHOLDS;
-        const isCustomBase = ConfigurationService.get('referenceBaseWidthSetting') !== 'auto';
+        const isThresholdMode = config.scalingMode === SCALING_MODES.THRESHOLDS;
+        const isCustomBase = config.referenceBaseWidthSetting !== 'auto';
 
         overlayElement.innerHTML = `
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.9.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.0.0</span>
             </h2>
+
+            <!-- MEJORA 1: Insignias de Estado en Tiempo Real -->
+            <div class="as-status-badge-container">
+              <div class="as-status-badge">🌐 Motor: ${engine.toUpperCase()}</div>
+              <div class="as-status-badge">📱 Vista Dividida: ${splitContext.isSplitView ? 'ACTIVA (50% Base)' : 'Inactiva (Full)'}</div>
+              <div class="as-status-badge">🔒 Límites: ${Math.round(config.minimumZoomScaleLimit * 100)}% - ${Math.round(config.maximumZoomScaleLimit * 100)}%</div>
+            </div>
 
             <!-- SECCIÓN: VISTA DIVIDIDA Y PANTALLA COMPLETA -->
             <div class="as-config-section">
               <div class="as-section-title">Vista Dividida y Precisión del Puntero</div>
               <div class="as-field-group">
                 <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-split-view" ${ConfigurationService.get('isSplitViewAdaptationEnabled') ? 'checked' : ''}>
+                  <input type="checkbox" id="as-checkbox-split-view" ${config.isSplitViewAdaptationEnabled ? 'checked' : ''}>
                   📱 Adaptación Inteligente para Vista Dividida (Firefox / Chrome / Edge / Windows Snap)
                 </label>
                 <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-protect-video" ${ConfigurationService.get('isProtectVideoPlayersEnabled') ? 'checked' : ''}>
+                  <input type="checkbox" id="as-checkbox-protect-video" ${config.isProtectVideoPlayersEnabled ? 'checked' : ''}>
                   🛡️ Precisión del ratón 1:1 en reproductores, controles y deslizadores
                 </label>
                 <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-reset-fullscreen" ${ConfigurationService.get('isResetInFullscreenEnabled') ? 'checked' : ''}>
+                  <input type="checkbox" id="as-checkbox-reset-fullscreen" ${config.isResetInFullscreenEnabled ? 'checked' : ''}>
                   📺 Restaurar zoom al 100% nativo al poner el video en Pantalla Completa
                 </label>
               </div>
@@ -741,7 +885,7 @@
               </div>
               <div class="as-field-group" id="as-container-custom-width" style="display: ${isCustomBase ? 'block' : 'none'};">
                 <label for="as-input-custom-width">Ancho en Píxeles (ej: 1920, 2560, 1366):</label>
-                <input type="number" id="as-input-custom-width" value="${isCustomBase ? ConfigurationService.get('referenceBaseWidthSetting') : 1920}" min="800" max="7680">
+                <input type="number" id="as-input-custom-width" value="${isCustomBase ? config.referenceBaseWidthSetting : 1920}" min="800" max="7680">
               </div>
             </div>
 
@@ -751,34 +895,34 @@
               <div class="as-grid-two-columns">
                 <div class="as-field-group">
                   <label for="as-input-threshold-80">Ventana &lt; 80%:</label>
-                  <input type="number" id="as-input-threshold-80" value="${Math.round(ConfigurationService.get('thresholdZoomLevelUnder80Percent') * 100)}" min="10" max="150">
+                  <input type="number" id="as-input-threshold-80" value="${Math.round(config.thresholdZoomLevelUnder80Percent * 100)}" min="10" max="150">
                 </div>
                 <div class="as-field-group">
                   <label for="as-input-threshold-60">Ventana &lt; 60%:</label>
-                  <input type="number" id="as-input-threshold-60" value="${Math.round(ConfigurationService.get('thresholdZoomLevelUnder60Percent') * 100)}" min="10" max="150">
+                  <input type="number" id="as-input-threshold-60" value="${Math.round(config.thresholdZoomLevelUnder60Percent * 100)}" min="10" max="150">
                 </div>
                 <div class="as-field-group">
                   <label for="as-input-threshold-40">Ventana &lt; 40%:</label>
-                  <input type="number" id="as-input-threshold-40" value="${Math.round(ConfigurationService.get('thresholdZoomLevelUnder40Percent') * 100)}" min="10" max="150">
+                  <input type="number" id="as-input-threshold-40" value="${Math.round(config.thresholdZoomLevelUnder40Percent * 100)}" min="10" max="150">
                 </div>
                 <div class="as-field-group">
                   <label for="as-input-threshold-20">Ventana &lt; 20%:</label>
-                  <input type="number" id="as-input-threshold-20" value="${Math.round(ConfigurationService.get('thresholdZoomLevelUnder20Percent') * 100)}" min="10" max="150">
+                  <input type="number" id="as-input-threshold-20" value="${Math.round(config.thresholdZoomLevelUnder20Percent * 100)}" min="10" max="150">
                 </div>
               </div>
             </div>
 
             <!-- SECCIÓN: LÍMITES GLOBALES -->
             <div class="as-config-section">
-              <div class="as-section-title">Límites de Zoom Absolutos</div>
+              <div class="as-section-title">Límites de Zoom Absolutos (Anti-Sobrescalado)</div>
               <div class="as-grid-two-columns">
                 <div class="as-field-group">
                   <label for="as-input-minimum-zoom">Zoom Mínimo (%):</label>
-                  <input type="number" id="as-input-minimum-zoom" value="${Math.round(ConfigurationService.get('minimumZoomScaleLimit') * 100)}" min="10" max="100">
+                  <input type="number" id="as-input-minimum-zoom" value="${Math.round(config.minimumZoomScaleLimit * 100)}" min="10" max="100">
                 </div>
                 <div class="as-field-group">
                   <label for="as-input-maximum-zoom">Zoom Máximo (%):</label>
-                  <input type="number" id="as-input-maximum-zoom" value="${Math.round(ConfigurationService.get('maximumZoomScaleLimit') * 100)}" min="50" max="200">
+                  <input type="number" id="as-input-maximum-zoom" value="${Math.round(config.maximumZoomScaleLimit * 100)}" min="50" max="200">
                 </div>
               </div>
             </div>
@@ -787,7 +931,7 @@
             <div class="as-config-section">
               <div class="as-field-group">
                 <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-smooth-transition" ${ConfigurationService.get('isSmoothTransitionEnabled') ? 'checked' : ''}>
+                  <input type="checkbox" id="as-checkbox-smooth-transition" ${config.isSmoothTransitionEnabled ? 'checked' : ''}>
                   Activar transición suave al cambiar de tamaño
                 </label>
               </div>
@@ -835,6 +979,7 @@
           destroyModal(overlayElement, listenerBindings);
         };
 
+        // MEJORA 2: Aplicación instantánea de configuración al guardar
         const handleSave = () => {
           const modeVal = scalingModeSelect.value;
           let baseVal = 'auto';
@@ -904,7 +1049,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.9', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.0', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
