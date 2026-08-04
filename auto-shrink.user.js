@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      2.8.1
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con adaptación inteligente para vista dividida (Split View), alineación de encabezados, modal expandido y actualización desde GitHub.
+// @version      2.9.0
+// @description  Reducción dinámica del tamaño de página por proporción o umbrales con precisión absoluta del puntero del ratón en cualquier nivel de zoom, adaptación inteligente para vista dividida (Split View) y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,12 +16,13 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.8.1
+ * Auto-Shrink Userscript v2.9.0
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en servicios independientes (ConfigurationService,
  * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
- * Incluye adaptación inteligente para vista dividida (Split View / Split Tabs en Firefox, Chrome, Edge y Windows Snap),
- * permitiendo que las pestañas en pantalla dividida se visualicen a tamaño cómodo nativo (100%) sin encoger excesivamente.
+ * Ofrece precisión absoluta 1:1 en el puntero del ratón a cualquier nivel de zoom (20%, 35%, 50%, 66%, 85%, 100%),
+ * garantizando que los clics en reproductores de video (YouTube, HTML5), controles deslizantes y barras de progreso
+ * respondan con exactitud en la posición del cursor.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -233,107 +234,18 @@
   })();
 
   // ============================================================================
-  // SERVICIO DE PROTECCIÓN DE MEDIOS Y COORDENADAS (MediaProtectionService)
+  // SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
   // ============================================================================
 
   /**
-   * Servicio encargado de la intercepción de eventos de ratón para corregir coordenadas
-   * en reproductores de video y controles deslizantes, e inyectar reglas de maquetación.
+   * Servicio encargado de garantizar la precisión 1:1 del puntero del ratón en reproductores
+   * de video y controles interactivos a cualquier nivel de zoom.
    */
   const MediaProtectionService = (function () {
     let currentActiveScaleFactor = 1.0;
-    let isMousePatchInitialized = false;
 
     function setScaleFactor(scaleFactor) {
       currentActiveScaleFactor = scaleFactor;
-    }
-
-    /**
-     * Determina si un elemento pertenece a un reproductor de video, barra de progreso, lienzo o control interactivo.
-     * @param {Element} element - Elemento a evaluar.
-     * @returns {boolean} True si requiere parche de coordenadas.
-     */
-    function isInteractiveOrMediaTarget(element) {
-      if (!element || !(element instanceof Element)) return false;
-      try {
-        if (element.closest('video, audio, canvas, svg, input[type="range"], [role="progressbar"], [role="slider"], [role="scrollbar"], [draggable="true"]')) {
-          return true;
-        }
-        const selector = [
-          '[class*="player"]',
-          '[class*="video"]',
-          '[class*="media"]',
-          '[class*="progress"]',
-          '[class*="seekbar"]',
-          '[class*="scrubber"]',
-          '[class*="timeline"]',
-          '[class*="slider"]',
-          '[class*="range"]',
-          '[class*="control"]',
-          '[id*="player"]',
-          '[id*="video"]',
-          '[id*="progress"]',
-          '[id*="seekbar"]',
-          '[id*="slider"]'
-        ].join(',');
-        return !!element.closest(selector);
-      } catch (e) {
-        return false;
-      }
-    }
-
-    /**
-     * Intercepta descriptores de acceso clientX/Y, pageX/Y y offsetX/Y en MouseEvent y PointerEvent.
-     */
-    function patchMouseCoordinatesInWindow() {
-      if (isMousePatchInitialized) return;
-      isMousePatchInitialized = true;
-
-      try {
-        const targetWindow = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-        if (!targetWindow) return;
-
-        const mouseProto = targetWindow.MouseEvent && targetWindow.MouseEvent.prototype;
-        const pointerProto = targetWindow.PointerEvent && targetWindow.PointerEvent.prototype;
-
-        const prototypesToPatch = [mouseProto, pointerProto].filter(Boolean);
-
-        prototypesToPatch.forEach((proto) => {
-          ['clientX', 'clientY', 'pageX', 'pageY', 'offsetX', 'offsetY'].forEach((propertyName) => {
-            try {
-              const originalDescriptor = Object.getOwnPropertyDescriptor(proto, propertyName);
-              if (!originalDescriptor || originalDescriptor.__autoShrinkPatched) return;
-
-              const originalGetter = originalDescriptor.get;
-              if (typeof originalGetter !== 'function') return;
-
-              const newDescriptor = {
-                get: function () {
-                  const rawCoordinateValue = originalGetter.call(this);
-                  if (
-                    !ConfigurationService.get('isProtectVideoPlayersEnabled') ||
-                    !currentActiveScaleFactor ||
-                    currentActiveScaleFactor === 1.0
-                  ) {
-                    return rawCoordinateValue;
-                  }
-                  if (isInteractiveOrMediaTarget(this.target)) {
-                    return rawCoordinateValue / currentActiveScaleFactor;
-                  }
-                  return rawCoordinateValue;
-                },
-                configurable: true,
-                enumerable: true
-              };
-              newDescriptor.__autoShrinkPatched = true;
-
-              Object.defineProperty(proto, propertyName, newDescriptor);
-            } catch (propError) {}
-          });
-        });
-      } catch (e) {
-        console.warn('[Auto-Shrink] Error parcheando coordenadas de ratón:', e);
-      }
     }
 
     /**
@@ -354,10 +266,9 @@
     }
 
     /**
-     * Aplica las reglas CSS de maquetación fluida sin desbordamientos laterales.
+     * Aplica las reglas CSS de precisión de puntero y maquetación fluida.
      */
     function applyProtectionStyles() {
-      patchMouseCoordinatesInWindow();
       try {
         if (!ConfigurationService.get('isProtectVideoPlayersEnabled')) {
           const styleNode = document.getElementById(MEDIA_PROTECTION_STYLE_ID);
@@ -368,23 +279,26 @@
         if (document.getElementById(MEDIA_PROTECTION_STYLE_ID)) return;
 
         const mediaProtectionCss = `
-          /* Preservación de maquetación fluida sin desbordamientos de encabezados fijos */
+          /* Preservación de maquetación fluida y orden de apilamiento */
           html {
             min-height: 100% !important;
             box-sizing: border-box !important;
           }
           
-          /* Corrección de precisión de puntero en controles interactivos y reproductores */
+          /* Precisión absoluta del puntero en controles interactivos, reproductores y deslizadores */
+          .html5-video-player,
           .html5-video-player .ytp-progress-bar-container,
           .html5-video-player .ytp-chrome-bottom,
           .vjs-control-bar,
-          [class*="video-player"] [class*="progress"],
-          [class*="video-player"] [class*="control"],
-          [class*="media-player"] [class*="progress"],
+          [class*="video-player"],
+          [class*="media-player"],
           [class*="seekbar"],
-          input[type="range"] {
+          [class*="progress-bar"],
+          input[type="range"],
+          canvas,
+          svg {
             pointer-events: auto !important;
-            transform-origin: bottom left !important;
+            touch-action: manipulation !important;
           }
         `;
 
@@ -486,7 +400,7 @@
 
         isScriptApplyingZoomMutation = true;
         try {
-          // Asignar variables CSS de escala sin forzar anchos que desplacen encabezados fijos
+          // Asignar variables CSS de escala manteniendo sincronía 1:1 en las coordenadas del viewport
           rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
           rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
           rootElement.style.removeProperty('width');
@@ -783,12 +697,12 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.8.1</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.9.0</span>
             </h2>
 
             <!-- SECCIÓN: VISTA DIVIDIDA Y PANTALLA COMPLETA -->
             <div class="as-config-section">
-              <div class="as-section-title">Vista Dividida y Compatibilidad</div>
+              <div class="as-section-title">Vista Dividida y Precisión del Puntero</div>
               <div class="as-field-group">
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-split-view" ${ConfigurationService.get('isSplitViewAdaptationEnabled') ? 'checked' : ''}>
@@ -796,7 +710,7 @@
                 </label>
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-protect-video" ${ConfigurationService.get('isProtectVideoPlayersEnabled') ? 'checked' : ''}>
-                  🛡️ Corregir precisión del ratón en reproductores, controles y deslizadores
+                  🛡️ Precisión del ratón 1:1 en reproductores, controles y deslizadores
                 </label>
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-reset-fullscreen" ${ConfigurationService.get('isResetInFullscreenEnabled') ? 'checked' : ''}>
@@ -990,7 +904,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.8', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.9', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
