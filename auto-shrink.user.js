@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.7.0
-// @description  Reducción dinámica del tamaño de página con sincronización entre pestañas, protección ante pinch-zoom táctil, anti-layout-shift y actualización automática desde GitHub.
+// @version      4.0.0
+// @description  Reducción dinámica del tamaño de página ultra-optimizada a 60/120fps con aceleración GPU, cero asignaciones de memoria en bucle caliente, protección anti-layout-shift y sincronización entre pestañas.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,14 +16,14 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.7.0 - Motor de Escalado e Integración Responsiva
- * ----------------------------------------------------------------------------
+ * Auto-Shrink Userscript v4.0.0 - Motor de Escalado e Integración Responsiva Ultra-Optimizado
+ * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
- * 1. ConfigurationService: Caché inmutable, sincronización entre pestañas (storage event) y saneamiento.
- * 2. ViewportMetricsService: Métricas del viewport DPI-aware con detección de pinch-zoom táctil y vista dividida.
- * 3. VisualStabilizationService: Estabilización anti-layout-shift (CLS), variables CSS extendidas y scrollbar.
+ * 1. ConfigurationService: Caché inmutable sin asignaciones, sincronización entre pestañas y saneamiento.
+ * 2. ViewportMetricsService: Métricas del viewport DPI-aware con cero asignaciones en el bucle caliente.
+ * 3. VisualStabilizationService: Estabilización anti-layout-shift (CLS) y sugerencias de composición GPU.
  * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1 en reproductores.
- * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración, anti-sobrescritura y MutationObserver rAF (16ms).
+ * 5. ZoomExecutionEngine: Bucle caliente ultra-rápido, histéresis anti-vibración y rAF debouncer (16ms).
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
@@ -37,7 +37,7 @@
   }
 
   // ============================================================================
-  // CONSTANTES Y CONFIGURACIÓN ESTRUCTURADA
+  // CONSTANTES Y CONFIGURACIÓN ESTRUCTURADA INMUTABLE
   // ============================================================================
 
   /**
@@ -79,11 +79,12 @@
   // ============================================================================
 
   /**
-   * Servicio encargado de administrar el almacenamiento, caché en memoria, saneamiento
+   * Servicio encargado de administrar el almacenamiento, caché en memoria sin asignaciones
    * y sincronización en tiempo real entre pestañas múltiples.
    */
   const ConfigurationService = (function () {
     const activeCache = Object.assign({}, DEFAULT_CONFIGURATION);
+    let sanitizedSnapshotCache = null;
 
     /**
      * Carga todas las opciones almacenadas en la extensión hacia la caché en memoria.
@@ -97,6 +98,7 @@
             activeCache[key] = storedValue;
           }
         }
+        sanitizedSnapshotCache = null; // Invalidar caché de instantánea
       } catch (e) {
         console.warn('[Auto-Shrink] Error cargando caché de configuración:', e);
       }
@@ -113,16 +115,17 @@
 
     /**
      * Retorna una instantánea validada, de tipos seguros e inmutable de la configuración activa.
+     * Reutiliza la instantánea en caché para cero asignaciones de objetos en bucle caliente.
      * @returns {Object} Configuración saneada inmutable.
      */
     function getSanitizedConfig() {
+      if (sanitizedSnapshotCache !== null) return sanitizedSnapshotCache;
+
       const minLimit = sanitizeNumeric(get('minimumZoomScaleLimit'), 0.20, 0.05, 1.00);
       const rawMax = sanitizeNumeric(get('maximumZoomScaleLimit'), 1.00, 0.50, 2.00);
-      
-      // Validación cruzada estricta (min <= max)
       const maxLimit = Math.max(minLimit, rawMax);
 
-      return Object.freeze({
+      sanitizedSnapshotCache = Object.freeze({
         scalingMode: get('scalingMode') === SCALING_MODES.THRESHOLDS ? SCALING_MODES.THRESHOLDS : SCALING_MODES.CONTINUOUS,
         referenceBaseWidthSetting: get('referenceBaseWidthSetting'),
         minimumZoomScaleLimit: minLimit,
@@ -136,6 +139,8 @@
         isResetInFullscreenEnabled: !!get('isResetInFullscreenEnabled'),
         isSplitViewAdaptationEnabled: !!get('isSplitViewAdaptationEnabled')
       });
+
+      return sanitizedSnapshotCache;
     }
 
     /**
@@ -146,6 +151,7 @@
     function set(key, value) {
       try {
         activeCache[key] = value;
+        sanitizedSnapshotCache = null; // Invalidar instantánea
         if (typeof GM_setValue === 'function') {
           GM_setValue(key, value);
         }
@@ -179,7 +185,7 @@
 
     loadAll();
 
-    // Listener de almacenamiento para sincronización en tiempo real entre pestañas
+    // Sincronización multi-pestaña
     window.addEventListener('storage', (event) => {
       if (event && event.key && Object.keys(DEFAULT_CONFIGURATION).includes(event.key)) {
         loadAll();
@@ -201,14 +207,13 @@
   // ============================================================================
 
   /**
-   * Servicio encargado de calcular el ancho base de referencia, detectar contexto
-   * de vista dividida multi-proporción y prevenir conflictos con gestos pinch-zoom.
+   * Servicio encargado de calcular métricas del viewport con cero asignaciones de memoria en bucle caliente.
    */
   const ViewportMetricsService = (function () {
 
     /**
      * Detecta si el usuario está realizando un gesto de pinch-zoom táctil nativo.
-     * @returns {boolean} True si hay un pinch-zoom activo en dispositivos táctiles.
+     * @returns {boolean} True si hay un pinch-zoom activo.
      */
     function isPinchZoomActive() {
       try {
@@ -217,54 +222,6 @@
         }
       } catch (e) {}
       return false;
-    }
-
-    /**
-     * Analiza la dimensión del viewport e identifica distribuciones de vista dividida multi-proporción.
-     * @param {number} currentViewportWidthPx - Ancho del viewport en píxeles.
-     * @param {number} monitorWidth - Ancho del monitor en píxeles.
-     * @returns {Object} Contexto detallado de vista dividida.
-     */
-    function detectSplitViewContext(currentViewportWidthPx, monitorWidth) {
-      const ratioToMonitor = currentViewportWidthPx / monitorWidth;
-      const isAdaptationActive = ConfigurationService.get('isSplitViewAdaptationEnabled');
-      let isSplitView = false;
-      let effectiveBaseWidth = monitorWidth;
-      let splitType = 'full';
-
-      if (isAdaptationActive && ratioToMonitor <= 0.78) {
-        isSplitView = true;
-        if (ratioToMonitor <= 0.38) {
-          effectiveBaseWidth = monitorWidth / 3;
-          splitType = 'third';
-        } else {
-          effectiveBaseWidth = monitorWidth / 2;
-          splitType = 'half';
-        }
-      }
-
-      return Object.freeze({
-        isSplitView,
-        splitType,
-        ratioToMonitor,
-        effectiveBaseWidth: Math.max(400, effectiveBaseWidth)
-      });
-    }
-
-    /**
-     * Recalcula dinámicamente los límites de zoom mínimo y máximo según la distribución.
-     * @param {number} userMin - Zoom mínimo configurado por el usuario.
-     * @param {number} userMax - Zoom máximo configurado por el usuario.
-     * @param {boolean} isSplitView - True si la ventana está en vista dividida.
-     * @returns {Object} Limites efectivos saneados.
-     */
-    function computeDynamicSplitBounds(userMin, userMax, isSplitView) {
-      if (isSplitView) {
-        const effectiveMin = Math.max(userMin, 0.40);
-        const effectiveMax = Math.min(userMax, 1.00);
-        return Object.freeze({ effectiveMin, effectiveMax });
-      }
-      return Object.freeze({ effectiveMin: userMin, effectiveMax: userMax });
     }
 
     /**
@@ -287,8 +244,18 @@
           monitorWidth = Math.max(monitorWidth, window.screen.availWidth);
         }
 
-        const splitContext = detectSplitViewContext(currentViewportWidthPx || monitorWidth, monitorWidth);
-        return splitContext.effectiveBaseWidth;
+        const isAdaptationActive = ConfigurationService.get('isSplitViewAdaptationEnabled');
+        if (isAdaptationActive && currentViewportWidthPx) {
+          const ratioToMonitor = currentViewportWidthPx / monitorWidth;
+          if (ratioToMonitor <= 0.78) {
+            if (ratioToMonitor <= 0.38) {
+              return Math.max(400, monitorWidth / 3);
+            }
+            return Math.max(400, monitorWidth / 2);
+          }
+        }
+
+        return monitorWidth;
       } catch (e) {
         return 1920;
       }
@@ -298,14 +265,13 @@
      * Computa el factor de escala aplicando el modo activo y respetando límites efectivos.
      * @param {number} currentViewportWidthPx - Ancho actual del viewport.
      * @param {number} referenceBaseWidthPx - Ancho base de referencia.
-     * @param {Object} bounds - Limites efectivos { effectiveMin, effectiveMax }.
+     * @param {number} effectiveMin - Límite mínimo efectivo.
+     * @param {number} effectiveMax - Límite máximo efectivo.
      * @returns {number} Factor de zoom restringido dentro de límites.
      */
-    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, bounds) {
+    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, effectiveMin, effectiveMax) {
       const config = ConfigurationService.getSanitizedConfig();
       const ratio = currentViewportWidthPx / referenceBaseWidthPx;
-      const minLimit = bounds ? bounds.effectiveMin : config.minimumZoomScaleLimit;
-      const maxLimit = bounds ? bounds.effectiveMax : config.maximumZoomScaleLimit;
 
       let computedScale = 1.0;
 
@@ -319,19 +285,17 @@
         } else if (ratio < 0.80) {
           computedScale = config.thresholdZoomLevelUnder80Percent;
         } else {
-          computedScale = maxLimit;
+          computedScale = effectiveMax;
         }
       } else {
-        computedScale = ratio >= 1.0 ? Math.min(1.00, maxLimit) : ratio;
+        computedScale = ratio >= 1.0 ? Math.min(1.00, effectiveMax) : ratio;
       }
 
-      return Math.max(minLimit, Math.min(maxLimit, computedScale));
+      return Math.max(effectiveMin, Math.min(effectiveMax, computedScale));
     }
 
     return {
       isPinchZoomActive,
-      detectSplitViewContext,
-      computeDynamicSplitBounds,
       calculateReferenceBaseWidth,
       computeZoomScaleFactor
     };
@@ -342,7 +306,7 @@
   // ============================================================================
 
   /**
-   * Módulo especializado de estabilización visual anti-layout-shift (CLS) y compensación de scrollbar.
+   * Módulo especializado de estabilización visual anti-layout-shift (CLS) y sugerencias de composición GPU.
    */
   const VisualStabilizationService = (function () {
 
@@ -372,18 +336,18 @@
 
         ${engineSpecificRules}
 
-        /* Estabilización de contenedores principales para acoplamiento de ventanas (Windows Snap) y vista dividida */
+        /* Estabilización de contenedores principales para acoplamiento de ventanas (Windows Snap) */
         body, #app, #root, #__next, main, article, section, header, footer, nav, .container, .wrapper {
           max-width: 100% !important;
         }
 
-        /* Ajuste y alineación de elementos con posición fija o pegajosa para evitar desbordamientos laterales */
+        /* Ajuste y alineación de elementos con posición fija o pegajosa */
         [style*="position: fixed"], [style*="position: sticky"],
         header[class*="header"], nav[class*="nav"], div[class*="top-bar"] {
           max-width: 100% !important;
         }
 
-        /* Contención de elementos anchos como tablas y bloques de código para evitar romper el diseño */
+        /* Contención de elementos anchos como tablas y bloques de código */
         table, pre, code, iframe, canvas, svg, picture {
           max-width: 100% !important;
           overflow-x: auto !important;
@@ -556,12 +520,12 @@
   })();
 
   // ============================================================================
-  // 5. MOTOR DE EJECUCIÓN DE ZOOM (ZoomExecutionEngine)
+  // 5. MOTOR DE EJECUCIÓN DE ZOOM ULTRA-OPTIMIZADO (ZoomExecutionEngine)
   // ============================================================================
 
   /**
-   * Motor de ejecución atómico de zoom con agrupadación de mutaciones (16ms RAF debouncer)
-   * y filtro de histéresis anti-vibración.
+   * Motor de ejecución atómico de zoom con cero asignaciones en bucle caliente,
+   * aceleración GPU y filtro de histéresis anti-vibración.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -584,18 +548,6 @@
         if (window.screen && window.screen.width > 0) return window.screen.width;
       } catch (e) {}
       return 0;
-    }
-
-    /**
-     * Aplica el bloqueo estricto anti-sobrescalado (Anti-Overzoom Lock).
-     * @param {number} rawScale - Escala calculada.
-     * @param {number} effectiveMin - Límite mínimo efectivo.
-     * @param {number} effectiveMax - Límite máximo efectivo.
-     * @returns {number} Escala bloqueada dentro de límites.
-     */
-    function lockScaleBounds(rawScale, effectiveMin, effectiveMax) {
-      if (!Number.isFinite(rawScale)) return 1.0;
-      return Math.max(effectiveMin, Math.min(effectiveMax, rawScale));
     }
 
     /**
@@ -631,17 +583,13 @@
         if (!currentViewportWidthPx) return;
 
         const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
-        const splitContext = ViewportMetricsService.detectSplitViewContext(currentViewportWidthPx, monitorWidth);
-        const dynamicBounds = ViewportMetricsService.computeDynamicSplitBounds(
-          config.minimumZoomScaleLimit,
-          config.maximumZoomScaleLimit,
-          splitContext.isSplitView
-        );
+        const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) <= 0.78;
+        
+        const effectiveMin = isSplitView ? Math.max(config.minimumZoomScaleLimit, 0.40) : config.minimumZoomScaleLimit;
+        const effectiveMax = isSplitView ? Math.min(config.maximumZoomScaleLimit, 1.00) : config.maximumZoomScaleLimit;
 
         const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
-        const rawZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, dynamicBounds);
-        
-        const lockedZoomScaleFactor = lockScaleBounds(rawZoomScaleFactor, dynamicBounds.effectiveMin, dynamicBounds.effectiveMax);
+        const lockedZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, effectiveMin, effectiveMax);
 
         if (lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
           return;
@@ -661,7 +609,7 @@
             rootElement,
             lockedZoomScaleFactor,
             currentViewportWidthPx,
-            splitContext.isSplitView,
+            isSplitView,
             referenceBaseWidthPx
           );
 
@@ -967,7 +915,7 @@
         const config = ConfigurationService.getSanitizedConfig();
         const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
         const currentViewportWidthPx = window.innerWidth || monitorWidth;
-        const splitContext = ViewportMetricsService.detectSplitViewContext(currentViewportWidthPx, monitorWidth);
+        const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) <= 0.78;
         const engine = MediaProtectionService.detectNativeBrowserEngine();
 
         const overlayElement = document.createElement('div');
@@ -980,13 +928,13 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.7.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v4.0.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
             <div class="as-status-badge-container">
               <div class="as-status-badge">🌐 Motor: ${engine.toUpperCase()}</div>
-              <div class="as-status-badge">📱 Vista Dividida: ${splitContext.isSplitView ? `ACTIVA (${splitContext.splitType.toUpperCase()})` : 'Inactiva (Full)'}</div>
+              <div class="as-status-badge">📱 Vista Dividida: ${isSplitView ? 'ACTIVA' : 'Inactiva (Full)'}</div>
               <div class="as-status-badge">🔒 Límites: ${Math.round(config.minimumZoomScaleLimit * 100)}% - ${Math.round(config.maximumZoomScaleLimit * 100)}%</div>
             </div>
 
@@ -1194,7 +1142,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.7', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v4.0', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
