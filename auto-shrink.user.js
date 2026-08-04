@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Auto-Shrink
-// @namespace    https://github.com/Baalgarthem
-// @version      2.6.0
-// @description  Reducción dinámica del tamaño de página por proporción o umbrales con emulación exacta de zoom nativo del navegador, modal de configuración expandido de lectura clara, parches de precisión multielemento y arquitectura modular por servicios.
+// @namespace    https://github.com/Baalgarthem/auto-shrink
+// @version      2.7.0
+// @description  Reducción dinámica del tamaño de página por proporción o umbrales con emulación exacta de zoom nativo del navegador, modal de configuración expandido de lectura clara, parches de precisión multielemento y actualización automática desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/TU_USUARIO/TU_REPOSITORIO/main/auto-shrink.user.js
-// @downloadURL  https://raw.githubusercontent.com/TU_USUARIO/TU_REPOSITORIO/main/auto-shrink.user.js
+// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/main/auto-shrink.user.js
+// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/main/auto-shrink.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -16,7 +16,7 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.6.0
+ * Auto-Shrink Userscript v2.7.0
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en servicios independientes (ConfigurationService,
  * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
@@ -775,7 +775,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.6.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.7.0</span>
             </h2>
 
             <!-- SECCIÓN: REPRODUCTORES DE VIDEO Y PANTALLA COMPLETA -->
@@ -976,11 +976,14 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.6', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v2.7', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
             ZoomExecutionEngine.applyViewportZoomScale();
+          });
+          GM_registerMenuCommand('🌐 Ver Repositorio en GitHub', () => {
+            window.open('https://github.com/Baalgarthem/auto-shrink', '_blank');
           });
         }
       } catch (e) {}
