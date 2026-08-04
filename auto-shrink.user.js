@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      2.8.0
+// @version      2.8.1
 // @description  Reducción dinámica del tamaño de página por proporción o umbrales con adaptación inteligente para vista dividida (Split View), alineación de encabezados, modal expandido y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/main/auto-shrink.user.js
-// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/main/auto-shrink.user.js
+// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js
+// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -16,7 +16,7 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v2.8.0
+ * Auto-Shrink Userscript v2.8.1
  * ----------------------------------------------------------------------------
  * Arquitectura modular dividida en servicios independientes (ConfigurationService,
  * ViewportMetricsService, MediaProtectionService, ZoomExecutionEngine, UserInterfaceController).
@@ -783,7 +783,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.8.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v2.8.1</span>
             </h2>
 
             <!-- SECCIÓN: VISTA DIVIDIDA Y PANTALLA COMPLETA -->
