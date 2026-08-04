@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.5.0
-// @description  Reducción dinámica del tamaño de página con compensación de barra de desplazamiento (--auto-shrink-scrollbar-width), precisión DPI-aware, tolerancia de histéresis anti-vibración y actualización desde GitHub.
+// @version      3.6.0
+// @description  Reducción dinámica del tamaño de página con adaptación a la orientación de pantalla, protección anti-sobrescritura de estilos, variables CSS extendidas y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,14 +16,14 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.5.0 - Motor de Escalado Inteligente y DPI-Awareness
+ * Auto-Shrink Userscript v3.6.0 - Motor de Escalado e Integración Responsiva
  * ----------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Caché inmutable, protección anti-corrupción y validación min <= max.
  * 2. ViewportMetricsService: Métricas del viewport DPI-aware con detección multi-proporción (50%, 33%, 25%).
- * 3. VisualStabilizationService: Estabilización responsiva y compensación de barra de desplazamiento.
+ * 3. VisualStabilizationService: Estabilización responsiva, variables CSS extendidas y compensación de scrollbar.
  * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1.
- * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración y MutationObserver agrupado en rAF (16ms).
+ * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración, anti-sobrescritura y MutationObserver rAF (16ms).
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
@@ -421,6 +421,9 @@
         const zoomScaleString = scaleFactor.toFixed(4);
         const inverseScaleString = (1 / scaleFactor).toFixed(4);
         const scrollbarWidthPx = Math.max(0, window.innerWidth - rootElement.clientWidth);
+        const viewportHeightPx = window.innerHeight || 1080;
+        const aspectRatioString = (viewportWidthPx / viewportHeightPx).toFixed(2);
+        const isFullscreen = MediaProtectionService.isDocumentInFullscreenMode();
 
         rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
         rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
@@ -428,6 +431,8 @@
         rootElement.style.setProperty('--auto-shrink-is-split-view', isSplitView ? '1' : '0');
         rootElement.style.setProperty('--auto-shrink-effective-base', referenceBasePx + 'px');
         rootElement.style.setProperty('--auto-shrink-scrollbar-width', scrollbarWidthPx + 'px');
+        rootElement.style.setProperty('--auto-shrink-aspect-ratio', aspectRatioString);
+        rootElement.style.setProperty('--auto-shrink-is-fullscreen', isFullscreen ? '1' : '0');
         rootElement.style.removeProperty('width');
         rootElement.style.removeProperty('min-height');
       } catch (e) {}
@@ -962,7 +967,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.5.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.6.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1176,7 +1181,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.5', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.6', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
@@ -1250,6 +1255,11 @@
   setTimeout(initializeEngine, 1000);
 
   window.addEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  if (window.screen && window.screen.orientation) {
+    window.screen.orientation.addEventListener('change', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  }
+  window.addEventListener('orientationchange', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) ZoomExecutionEngine.applyViewportZoomScale();
   }, { passive: true });
