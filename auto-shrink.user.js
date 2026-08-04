@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      4.0.0
+// @version      4.0.1
 // @description  Reducción dinámica del tamaño de página ultra-optimizada a 60/120fps con aceleración GPU, cero asignaciones de memoria en bucle caliente, protección anti-layout-shift y sincronización entre pestañas.
 // @author       Baalgarthem
 // @match        *://*/*
