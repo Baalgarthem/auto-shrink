@@ -3,7 +3,7 @@
 Auto-Shrink es una herramienta de optimizacion visual desarrollada para la extension Violentmonkey (compatible con Tampermonkey y Greasemonkey). Su proposito es ajustar de forma inteligente el tamano de las paginas web cuando la ventana del navegador se reduce.
 
 ---
-
+sasas
 ## Ventajas y Beneficios Principales
 
 ### 1. Multitarea y Pantalla Dividida Sin Esfuerzo
