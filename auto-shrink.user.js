@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.6.1
+// @version      3.6.2
 // @description  Reducción dinámica del tamaño de página con adaptación a la orientación de pantalla, protección anti-sobrescritura de estilos, variables CSS extendidas y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
