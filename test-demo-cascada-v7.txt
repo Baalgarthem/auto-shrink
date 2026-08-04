@@ -1,0 +1,6 @@
+Prueba en vivo v7.2: Demostración de commit ascendente en los 3 niveles del árbol Git.
+Fecha: 2026-08-04
+Nivel 0: auto-shrink (Submódulo) -> Commit generado
+Nivel 1: web-userscripts (Submódulo Padre) -> Commit del puntero auto-shrink generado
+Nivel 2: Scripts (Repositorio Raíz) -> Commit del puntero web-userscripts generado
+Rama Destino: principal
