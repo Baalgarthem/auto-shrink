@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.1.0
-// @description  Reducción dinámica del tamaño de página con estabilización visual para multitarea y vista dividida, emulación de zoom nativo, bloqueo anti-sobrescalado y actualización desde GitHub.
+// @version      3.2.0
+// @description  Reducción dinámica del tamaño de página con módulo especializado de estabilización visual responsiva, adaptación para vista dividida, emulación de zoom nativo, bloqueo anti-sobrescalado y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,14 +16,15 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.1.0 - Motor de Estabilización Visual y Adaptación Multitarea
+ * Auto-Shrink Userscript v3.2.0 - Arquitectura Modular Clean Code
  * ----------------------------------------------------------------------------
- * Arquitectura modular dividida en 5 servicios avanzados:
- * 1. ConfigurationService: Manejo de caché inmutable, saneamiento y validación cruzada min <= max.
- * 2. ViewportMetricsService: Detección inteligente de vista dividida y cálculo de límites dinámicos.
- * 3. MediaProtectionService: Estabilización de maquetación responsiva para multitarea y puntero 1:1.
- * 4. ZoomExecutionEngine: Bloqueo anti-sobrescalado, variables CSS globales y zoom nativo sin parpadeos.
- * 5. UserInterfaceController: Modal expandido con indicador de estado en tiempo real y vista previa instantánea.
+ * Estructura dividida en 6 servicios modulares especializados:
+ * 1. ConfigurationService: Caché inmutable, saneamiento y validación min <= max.
+ * 2. ViewportMetricsService: Métricas del viewport, vista dividida y límites dinámicos.
+ * 3. VisualStabilizationService: Módulo especializado de estabilización visual y responsiva.
+ * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1.
+ * 5. ZoomExecutionEngine: Bloqueo anti-sobrescalado y motor de renderizado sin parpadeos.
+ * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en vivo.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -70,7 +71,7 @@
   });
 
   const CONFIGURATION_MODAL_OVERLAY_ID = 'auto-shrink-configuration-modal-overlay-v2';
-  const MEDIA_PROTECTION_STYLE_ID = 'auto-shrink-media-protection-styles';
+  const VISUAL_STABILIZATION_STYLE_ID = 'auto-shrink-visual-stabilization-styles';
 
   // ============================================================================
   // 1. SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
@@ -298,12 +299,131 @@
   })();
 
   // ============================================================================
-  // 3. SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
+  // 3. SERVICIO DE ESTABILIZACIÓN VISUAL Y RESPONSIVA (VisualStabilizationService)
   // ============================================================================
 
   /**
-   * Servicio encargado de la estabilización visual de maquetación para multitarea,
-   * compatibilidad por motor (Gecko vs Blink) y precisión del puntero 1:1.
+   * Módulo especializado de estabilización visual responsiva.
+   * Evita desbordamientos de maquetación, rompeduras de diseño y desalineación de elementos fijos
+   * al realizar multitareas o usar vista dividida en cualquier navegador.
+   */
+  const VisualStabilizationService = (function () {
+
+    /**
+     * Genera la hoja de estilos de estabilización visual adaptada al motor del navegador.
+     * @param {string} engineName - Nombre del motor del navegador ('gecko' o 'blink').
+     * @returns {string} Código CSS optimizado.
+     */
+    function buildStabilizationCssText(engineName) {
+      const engineSpecificRules = engineName === 'gecko' 
+        ? `/* Reglas de suavizado de maquetación específicas para Firefox (Gecko) */
+           html { layout-smoothing: subpixel-antialiased !important; }`
+        : `/* Reglas de suavizado de maquetación específicas para Chromium (Blink) */
+           html { -webkit-font-smoothing: antialiased !important; }`;
+
+      return `
+        /* Preservación de maquetación fluida y orden de apilamiento */
+        html {
+          min-height: 100% !important;
+          box-sizing: border-box !important;
+          overflow-x: hidden !important;
+        }
+
+        *, *::before, *::after {
+          box-sizing: inherit !important;
+        }
+
+        ${engineSpecificRules}
+
+        /* Estabilización de contenedores principales para acoplamiento de ventanas (Windows Snap) y vista dividida */
+        body, #app, #root, #__next, main, article, section, header, footer, nav, .container, .wrapper {
+          max-width: 100% !important;
+        }
+
+        /* Ajuste y alineación de elementos con posición fija o pegajosa para evitar desbordamientos laterales */
+        [style*="position: fixed"], [style*="position: sticky"],
+        header[class*="header"], nav[class*="nav"], div[class*="top-bar"] {
+          max-width: 100% !important;
+        }
+
+        /* Contención de elementos anchos como tablas y bloques de código para evitar romper el diseño */
+        table, pre, code, iframe, canvas, svg, picture {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+        }
+
+        /* Escalado fluido y adaptativo de medios e imágenes */
+        img, video {
+          max-width: 100% !important;
+          height: auto !important;
+          object-fit: contain;
+        }
+      `;
+    }
+
+    /**
+     * Inyecta dinámicamente las reglas de estabilización visual en el documento.
+     * @param {string} engineName - Nombre del motor del navegador.
+     */
+    function injectStabilizationStyles(engineName) {
+      try {
+        if (document.getElementById(VISUAL_STABILIZATION_STYLE_ID)) return;
+
+        const cssContent = buildStabilizationCssText(engineName);
+
+        if (typeof GM_addStyle === 'function') {
+          GM_addStyle(cssContent);
+        } else {
+          const styleElement = document.createElement('style');
+          styleElement.id = VISUAL_STABILIZATION_STYLE_ID;
+          styleElement.textContent = cssContent;
+          const targetParent = document.head || document.documentElement;
+          if (targetParent) {
+            targetParent.appendChild(styleElement);
+          }
+        }
+      } catch (e) {
+        console.warn('[Auto-Shrink] Error inyectando hoja de estabilización visual:', e);
+      }
+    }
+
+    /**
+     * Aplica las variables CSS globales de maquetación en el elemento raíz.
+     * @param {HTMLElement} rootElement - Elemento html.
+     * @param {number} scaleFactor - Factor de zoom activo.
+     * @param {number} viewportWidthPx - Ancho del viewport.
+     * @param {boolean} isSplitView - Indicador de vista dividida.
+     * @param {number} referenceBasePx - Ancho base activo.
+     */
+    function updateGlobalCssVariables(rootElement, scaleFactor, viewportWidthPx, isSplitView, referenceBasePx) {
+      if (!rootElement || !rootElement.style) return;
+      try {
+        const zoomScaleString = scaleFactor.toFixed(4);
+        const inverseScaleString = (1 / scaleFactor).toFixed(4);
+
+        rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
+        rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
+        rootElement.style.setProperty('--auto-shrink-viewport-width', viewportWidthPx + 'px');
+        rootElement.style.setProperty('--auto-shrink-is-split-view', isSplitView ? '1' : '0');
+        rootElement.style.setProperty('--auto-shrink-effective-base', referenceBasePx + 'px');
+        rootElement.style.removeProperty('width');
+        rootElement.style.removeProperty('min-height');
+      } catch (e) {}
+    }
+
+    return {
+      injectStabilizationStyles,
+      updateGlobalCssVariables
+    };
+  })();
+
+  // ============================================================================
+  // 4. SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
+  // ============================================================================
+
+  /**
+   * Servicio encargado de la compatibilidad por motor del navegador (Gecko vs Blink)
+   * y la inyección de reglas CSS para garantizar precisión 1:1 en eventos de puntero.
    */
   const MediaProtectionService = (function () {
     let currentActiveScaleFactor = 1.0;
@@ -343,51 +463,16 @@
     }
 
     /**
-     * Inyecta una hoja de estilos de estabilización visual responsiva y multitarea.
+     * Aplica la estabilización visual y la protección de eventos de puntero.
      */
     function applyProtectionStyles() {
       try {
-        if (!ConfigurationService.get('isProtectVideoPlayersEnabled')) {
-          const styleNode = document.getElementById(MEDIA_PROTECTION_STYLE_ID);
-          if (styleNode) styleNode.remove();
-          return;
-        }
-
-        if (document.getElementById(MEDIA_PROTECTION_STYLE_ID)) return;
-
         const engine = detectNativeBrowserEngine();
-        const engineSpecificRules = engine === 'gecko' 
-          ? `/* Reglas especificas para Firefox (Gecko) */
-             html { layout-smoothing: subpixel-antialiased !important; }`
-          : `/* Reglas especificas para Chromium (Blink) */
-             html { -webkit-font-smoothing: antialiased !important; }`;
+        VisualStabilizationService.injectStabilizationStyles(engine);
+
+        if (!ConfigurationService.get('isProtectVideoPlayersEnabled')) return;
 
         const mediaProtectionCss = `
-          /* Preservación de maquetación fluida y orden de apilamiento en multitarea */
-          html {
-            min-height: 100% !important;
-            box-sizing: border-box !important;
-          }
-
-          ${engineSpecificRules}
-
-          /* Estabilización de contenedores principales para acoplamiento de ventanas y vista dividida */
-          body, #app, #root, #__next, main, article, section, header, footer, nav, .container, .wrapper {
-            max-width: 100% !important;
-          }
-
-          /* Ajuste de elementos fijos para evitar desbordamiento horizontal */
-          [style*="position: fixed"], [style*="position: sticky"],
-          header[class*="header"], nav[class*="nav"], div[class*="top-bar"] {
-            max-width: 100% !important;
-          }
-
-          /* Escalado fluido de medios y elementos embebidos en ventanas estrechas */
-          img, video, iframe, canvas, svg, picture {
-            max-width: 100% !important;
-            object-fit: contain;
-          }
-          
           /* Precisión absoluta del puntero en controles interactivos, reproductores y deslizadores */
           .html5-video-player,
           .html5-video-player .ytp-progress-bar-container,
@@ -409,7 +494,6 @@
           GM_addStyle(mediaProtectionCss);
         } else {
           const styleElement = document.createElement('style');
-          styleElement.id = MEDIA_PROTECTION_STYLE_ID;
           styleElement.textContent = mediaProtectionCss;
           const targetParent = document.head || document.documentElement;
           if (targetParent) {
@@ -428,12 +512,12 @@
   })();
 
   // ============================================================================
-  // 4. MOTOR DE EJECUCIÓN DE ZOOM (ZoomExecutionEngine)
+  // 5. MOTOR DE EJECUCIÓN DE ZOOM (ZoomExecutionEngine)
   // ============================================================================
 
   /**
    * Motor de ejecución atómico de zoom. Aplica el bloqueo anti-sobrescalado,
-   * expone variables CSS globales y emula zoom nativo sin parpadeos.
+   * actualiza variables CSS globales y emula zoom nativo sin parpadeos.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -488,11 +572,7 @@
           if (lastAppliedZoomScaleString !== '1.0000') {
             isScriptApplyingZoomMutation = true;
             try {
-              rootElement.style.setProperty('--auto-shrink-scale', '1');
-              rootElement.style.setProperty('--auto-shrink-inv-scale', '1');
-              rootElement.style.setProperty('--auto-shrink-is-split-view', '0');
-              rootElement.style.removeProperty('width');
-              rootElement.style.removeProperty('min-height');
+              VisualStabilizationService.updateGlobalCssVariables(rootElement, 1.0, window.innerWidth || 1920, false, 1920);
               rootElement.style.setProperty('zoom', '1.0', 'important');
               lastAppliedZoomScaleString = '1.0000';
             } finally {
@@ -520,7 +600,6 @@
         const lockedZoomScaleFactor = lockScaleBounds(rawZoomScaleFactor, dynamicBounds.effectiveMin, dynamicBounds.effectiveMax);
 
         const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
-        const inverseScaleString = (1 / lockedZoomScaleFactor).toFixed(4);
 
         MediaProtectionService.setScaleFactor(lockedZoomScaleFactor);
 
@@ -531,13 +610,13 @@
         isScriptApplyingZoomMutation = true;
         try {
           // Asignar variables CSS de escala e integración dinámica multitarea
-          rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
-          rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
-          rootElement.style.setProperty('--auto-shrink-viewport-width', currentViewportWidthPx + 'px');
-          rootElement.style.setProperty('--auto-shrink-is-split-view', splitContext.isSplitView ? '1' : '0');
-          rootElement.style.setProperty('--auto-shrink-effective-base', referenceBaseWidthPx + 'px');
-          rootElement.style.removeProperty('width');
-          rootElement.style.removeProperty('min-height');
+          VisualStabilizationService.updateGlobalCssVariables(
+            rootElement,
+            lockedZoomScaleFactor,
+            currentViewportWidthPx,
+            splitContext.isSplitView,
+            referenceBaseWidthPx
+          );
 
           if (config.isSmoothTransitionEnabled) {
             if (!rootElement.style.transition.includes('zoom')) {
@@ -640,7 +719,7 @@
   })();
 
   // ============================================================================
-  // 5. CONTROLADOR DE INTERFAZ DE USUARIO (UserInterfaceController)
+  // 6. CONTROLADOR DE INTERFAZ DE USUARIO (UserInterfaceController)
   // ============================================================================
 
   /**
@@ -831,7 +910,7 @@
     }
 
     /**
-     * Renderiza el modal con insignias de estado activo en tiempo real.
+     * Renderiza la ventana modal con insignias de estado activo en tiempo real.
      */
     function renderModal() {
       try {
@@ -855,7 +934,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.1.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.2.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1069,7 +1148,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.1', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.2', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
@@ -1089,7 +1168,7 @@
   })();
 
   // ============================================================================
-  // CICLO DE VIDA GLOBAL Y EVENTOS DE INICIALIZACIÓN MULTIETAPA
+  // 7. CICLO DE VIDA GLOBAL Y ENGANCHES MULTIETAPA
   // ============================================================================
 
   function initializeEngine() {
