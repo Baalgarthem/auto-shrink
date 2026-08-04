@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.6.5
-// @description  Reducción dinámica del tamaño de página con adaptación a la orientación de pantalla, protección anti-sobrescritura de estilos, variables CSS extendidas y actualización desde GitHub.
+// @version      3.7.0
+// @description  Reducción dinámica del tamaño de página con sincronización entre pestañas, protección ante pinch-zoom táctil, anti-layout-shift y actualización automática desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,13 +16,13 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.6.0 - Motor de Escalado e Integración Responsiva
+ * Auto-Shrink Userscript v3.7.0 - Motor de Escalado e Integración Responsiva
  * ----------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
- * 1. ConfigurationService: Caché inmutable, protección anti-corrupción y validación min <= max.
- * 2. ViewportMetricsService: Métricas del viewport DPI-aware con detección multi-proporción (50%, 33%, 25%).
- * 3. VisualStabilizationService: Estabilización responsiva, variables CSS extendidas y compensación de scrollbar.
- * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1.
+ * 1. ConfigurationService: Caché inmutable, sincronización entre pestañas (storage event) y saneamiento.
+ * 2. ViewportMetricsService: Métricas del viewport DPI-aware con detección de pinch-zoom táctil y vista dividida.
+ * 3. VisualStabilizationService: Estabilización anti-layout-shift (CLS), variables CSS extendidas y scrollbar.
+ * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1 en reproductores.
  * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración, anti-sobrescritura y MutationObserver rAF (16ms).
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
@@ -80,7 +80,7 @@
 
   /**
    * Servicio encargado de administrar el almacenamiento, caché en memoria, saneamiento
-   * y validación cruzada de límites de configuración con protección anti-corrupción.
+   * y sincronización en tiempo real entre pestañas múltiples.
    */
   const ConfigurationService = (function () {
     const activeCache = Object.assign({}, DEFAULT_CONFIGURATION);
@@ -179,6 +179,14 @@
 
     loadAll();
 
+    // Listener de almacenamiento para sincronización en tiempo real entre pestañas
+    window.addEventListener('storage', (event) => {
+      if (event && event.key && Object.keys(DEFAULT_CONFIGURATION).includes(event.key)) {
+        loadAll();
+        ZoomExecutionEngine.scheduleFrameExecution();
+      }
+    }, { passive: true });
+
     return {
       get,
       getSanitizedConfig,
@@ -194,9 +202,22 @@
 
   /**
    * Servicio encargado de calcular el ancho base de referencia, detectar contexto
-   * de vista dividida multi-proporción (50%, 33%, 25%) y aplicar adaptaciones DPI-aware.
+   * de vista dividida multi-proporción y prevenir conflictos con gestos pinch-zoom.
    */
   const ViewportMetricsService = (function () {
+
+    /**
+     * Detecta si el usuario está realizando un gesto de pinch-zoom táctil nativo.
+     * @returns {boolean} True si hay un pinch-zoom activo en dispositivos táctiles.
+     */
+    function isPinchZoomActive() {
+      try {
+        if (window.visualViewport && typeof window.visualViewport.scale === 'number') {
+          return Math.abs(window.visualViewport.scale - 1.0) > 0.05;
+        }
+      } catch (e) {}
+      return false;
+    }
 
     /**
      * Analiza la dimensión del viewport e identifica distribuciones de vista dividida multi-proporción.
@@ -214,11 +235,9 @@
       if (isAdaptationActive && ratioToMonitor <= 0.78) {
         isSplitView = true;
         if (ratioToMonitor <= 0.38) {
-          // Vista dividida en un tercio (33%) o un cuarto (25%)
           effectiveBaseWidth = monitorWidth / 3;
           splitType = 'third';
         } else {
-          // Vista dividida a la mitad (50%)
           effectiveBaseWidth = monitorWidth / 2;
           splitType = 'half';
         }
@@ -241,8 +260,8 @@
      */
     function computeDynamicSplitBounds(userMin, userMax, isSplitView) {
       if (isSplitView) {
-        const effectiveMin = Math.max(userMin, 0.40); // Previene reducción excesiva en split view
-        const effectiveMax = Math.min(userMax, 1.00); // 100% nativo en panel dividido
+        const effectiveMin = Math.max(userMin, 0.40);
+        const effectiveMax = Math.min(userMax, 1.00);
         return Object.freeze({ effectiveMin, effectiveMax });
       }
       return Object.freeze({ effectiveMin: userMin, effectiveMax: userMax });
@@ -264,7 +283,6 @@
 
         let monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
         
-        // Ajuste DPI-aware para pantallas de alta densidad
         if (window.devicePixelRatio && window.devicePixelRatio > 1.25 && window.screen.availWidth) {
           monitorWidth = Math.max(monitorWidth, window.screen.availWidth);
         }
@@ -304,15 +322,14 @@
           computedScale = maxLimit;
         }
       } else {
-        // Enfoque estricto de auto-shrink: Si la ventana es grande (ratio >= 1.0), el zoom no supera 1.00
         computedScale = ratio >= 1.0 ? Math.min(1.00, maxLimit) : ratio;
       }
 
-      // Restricción matemática estricta [effectiveMin, effectiveMax]
       return Math.max(minLimit, Math.min(maxLimit, computedScale));
     }
 
     return {
+      isPinchZoomActive,
       detectSplitViewContext,
       computeDynamicSplitBounds,
       calculateReferenceBaseWidth,
@@ -325,7 +342,7 @@
   // ============================================================================
 
   /**
-   * Módulo especializado de estabilización visual responsiva y compensación de barra de desplazamiento.
+   * Módulo especializado de estabilización visual anti-layout-shift (CLS) y compensación de scrollbar.
    */
   const VisualStabilizationService = (function () {
 
@@ -342,7 +359,7 @@
            html { -webkit-font-smoothing: antialiased !important; }`;
 
       return `
-        /* Preservación de maquetación fluida y orden de apilamiento */
+        /* Preservación de maquetación fluida anti-layout-shift (CLS) */
         html {
           min-height: 100% !important;
           box-sizing: border-box !important;
@@ -586,6 +603,7 @@
      */
     function applyViewportZoomScale() {
       if (document.hidden) return;
+      if (ViewportMetricsService.isPinchZoomActive()) return;
 
       try {
         const rootElement = document.documentElement;
@@ -593,7 +611,6 @@
 
         const config = ConfigurationService.getSanitizedConfig();
 
-        // Reiniciar a 100% nativo si está en Pantalla Completa
         if (config.isResetInFullscreenEnabled && MediaProtectionService.isDocumentInFullscreenMode()) {
           MediaProtectionService.setScaleFactor(1.0);
           if (lastAppliedZoomScaleString !== '1.0000') {
@@ -624,10 +641,8 @@
         const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
         const rawZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, dynamicBounds);
         
-        // Bloqueo Anti-Sobrescalado Estricto
         const lockedZoomScaleFactor = lockScaleBounds(rawZoomScaleFactor, dynamicBounds.effectiveMin, dynamicBounds.effectiveMax);
 
-        // Filtro de Histéresis: Si la diferencia de escala es menor al 0.5%, ignora la mutación para evitar vibración de sub-píxel
         if (lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
           return;
         }
@@ -642,7 +657,6 @@
 
         isScriptApplyingZoomMutation = true;
         try {
-          // Asignar variables CSS de escala e integración dinámica multitarea
           VisualStabilizationService.updateGlobalCssVariables(
             rootElement,
             lockedZoomScaleFactor,
@@ -777,7 +791,6 @@
           font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
           box-sizing: border-box !important;
           color: #f8fafc !important;
-          /* Contra-escalado inverso: El modal siempre se renderiza a escala real (100% o mayor) sin sufrir reduccion */
           zoom: calc(1 / var(--auto-shrink-scale, 1)) !important;
           transform-origin: center center !important;
         }
@@ -967,7 +980,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.6.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.7.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1181,7 +1194,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.6', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.7', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
@@ -1236,7 +1249,6 @@
     } catch (e) {}
   }
 
-  // Enganches multietapa para asegurar el inicio en cualquier tipo de pagina web
   if (document.documentElement) {
     initializeEngine();
   }
@@ -1249,7 +1261,6 @@
 
   window.addEventListener('load', initializeEngine, { once: true });
 
-  // Temporizadores de respaldo (failsafes) para sitios de carga diferida (SPAs)
   setTimeout(initializeEngine, 50);
   setTimeout(initializeEngine, 300);
   setTimeout(initializeEngine, 1000);
