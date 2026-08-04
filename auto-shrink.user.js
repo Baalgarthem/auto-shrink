@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
-// @version      3.2.0
-// @description  Reducción dinámica del tamaño de página con módulo especializado de estabilización visual responsiva, adaptación para vista dividida, emulación de zoom nativo, bloqueo anti-sobrescalado y actualización desde GitHub.
+// @version      3.3.0
+// @description  Reducción dinámica del tamaño de página con lógica de histéresis anti-vibración, detección multi-proporción para vista dividida (50%, 33%, 25%), estabilización visual responsiva y actualización desde GitHub.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,15 +16,15 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v3.2.0 - Arquitectura Modular Clean Code
+ * Auto-Shrink Userscript v3.3.0 - Motor de Escalado Inteligente
  * ----------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Caché inmutable, saneamiento y validación min <= max.
- * 2. ViewportMetricsService: Métricas del viewport, vista dividida y límites dinámicos.
+ * 2. ViewportMetricsService: Métricas del viewport con detección multi-proporción (50%, 33%, 25%).
  * 3. VisualStabilizationService: Módulo especializado de estabilización visual y responsiva.
  * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1.
- * 5. ZoomExecutionEngine: Bloqueo anti-sobrescalado y motor de renderizado sin parpadeos.
- * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en vivo.
+ * 5. ZoomExecutionEngine: Filtro de histéresis anti-vibración, bloqueo anti-sobrescalado y zoom nativo.
+ * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -72,6 +72,7 @@
 
   const CONFIGURATION_MODAL_OVERLAY_ID = 'auto-shrink-configuration-modal-overlay-v2';
   const VISUAL_STABILIZATION_STYLE_ID = 'auto-shrink-visual-stabilization-styles';
+  const HYSTERESIS_THRESHOLD = 0.005; // 0.5% de tolerancia para evitar vibraciones de sub-píxel
 
   // ============================================================================
   // 1. SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
@@ -193,31 +194,46 @@
 
   /**
    * Servicio encargado de calcular el ancho base de referencia, detectar contexto
-   * de vista dividida y calcular límites dinámicos de escalado.
+   * de vista dividida multi-proporción (50%, 33%, 25%) y calcular límites dinámicos de escalado.
    */
   const ViewportMetricsService = (function () {
 
     /**
-     * Analiza la dimensión del viewport frente a la pantalla e identifica si está en vista dividida o acoplada.
+     * Analiza la dimensión del viewport e identifica distribuciones de vista dividida multi-proporción.
      * @param {number} currentViewportWidthPx - Ancho del viewport en píxeles.
      * @param {number} monitorWidth - Ancho del monitor en píxeles.
      * @returns {Object} Contexto detallado de vista dividida.
      */
     function detectSplitViewContext(currentViewportWidthPx, monitorWidth) {
       const ratioToMonitor = currentViewportWidthPx / monitorWidth;
-      const isSplitView = ConfigurationService.get('isSplitViewAdaptationEnabled') && ratioToMonitor <= 0.75;
-      const effectiveBaseWidth = isSplitView ? (monitorWidth / 2) : monitorWidth;
+      const isAdaptationActive = ConfigurationService.get('isSplitViewAdaptationEnabled');
+      let isSplitView = false;
+      let effectiveBaseWidth = monitorWidth;
+      let splitType = 'full';
+
+      if (isAdaptationActive && ratioToMonitor <= 0.78) {
+        isSplitView = true;
+        if (ratioToMonitor <= 0.38) {
+          // Vista dividida en un tercio (33%) o un cuarto (25%)
+          effectiveBaseWidth = monitorWidth / 3;
+          splitType = 'third';
+        } else {
+          // Vista dividida a la mitad (50%)
+          effectiveBaseWidth = monitorWidth / 2;
+          splitType = 'half';
+        }
+      }
 
       return Object.freeze({
         isSplitView,
+        splitType,
         ratioToMonitor,
         effectiveBaseWidth: Math.max(400, effectiveBaseWidth)
       });
     }
 
     /**
-     * Recalcula dinámicamente los límites de zoom mínimo y máximo para vista dividida.
-     * Evita que pestañas divididas se reduzcan a tamaños diminutos e ilegibles.
+     * Recalcula dinámicamente los límites de zoom mínimo y máximo según la distribución.
      * @param {number} userMin - Zoom mínimo configurado por el usuario.
      * @param {number} userMax - Zoom máximo configurado por el usuario.
      * @param {boolean} isSplitView - True si la ventana está en vista dividida.
@@ -304,8 +320,7 @@
 
   /**
    * Módulo especializado de estabilización visual responsiva.
-   * Evita desbordamientos de maquetación, rompeduras de diseño y desalineación de elementos fijos
-   * al realizar multitareas o usar vista dividida en cualquier navegador.
+   * Evita desbordamientos de maquetación, rompeduras de diseño y desalineación de elementos fijos.
    */
   const VisualStabilizationService = (function () {
 
@@ -516,8 +531,8 @@
   // ============================================================================
 
   /**
-   * Motor de ejecución atómico de zoom. Aplica el bloqueo anti-sobrescalado,
-   * actualiza variables CSS globales y emula zoom nativo sin parpadeos.
+   * Motor de ejecución atómico de zoom. Aplica el filtro de histéresis anti-vibración,
+   * bloqueo anti-sobrescalado y actualiza variables CSS globales.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
@@ -526,6 +541,7 @@
     let elementResizeObserver = null;
     let isScriptApplyingZoomMutation = false;
     let lastAppliedZoomScaleString = null;
+    let lastAppliedScaleValue = 1.0;
 
     /**
      * Consulta el ancho válido del viewport navegando entre múltiples fuentes de respaldo.
@@ -543,7 +559,6 @@
 
     /**
      * Aplica el bloqueo estricto anti-sobrescalado (Anti-Overzoom Lock).
-     * Si la ventana o el usuario intentan superar el máximo configurado, el motor lo bloquea en el límite.
      * @param {number} rawScale - Escala calculada.
      * @param {number} effectiveMin - Límite mínimo efectivo.
      * @param {number} effectiveMax - Límite máximo efectivo.
@@ -555,7 +570,7 @@
     }
 
     /**
-     * Aplica la escala calculada asignando variables CSS y aplicando zoom nativo.
+     * Aplica la escala calculada asignando variables CSS y aplicando zoom nativo con filtro de histéresis.
      */
     function applyViewportZoomScale() {
       if (document.hidden) return;
@@ -575,6 +590,7 @@
               VisualStabilizationService.updateGlobalCssVariables(rootElement, 1.0, window.innerWidth || 1920, false, 1920);
               rootElement.style.setProperty('zoom', '1.0', 'important');
               lastAppliedZoomScaleString = '1.0000';
+              lastAppliedScaleValue = 1.0;
             } finally {
               isScriptApplyingZoomMutation = false;
             }
@@ -598,6 +614,11 @@
         
         // Bloqueo Anti-Sobrescalado Estricto
         const lockedZoomScaleFactor = lockScaleBounds(rawZoomScaleFactor, dynamicBounds.effectiveMin, dynamicBounds.effectiveMax);
+
+        // Filtro de Histéresis: Si la diferencia de escala es menor al 0.5%, ignora la mutación para evitar vibración de sub-píxel
+        if (lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
+          return;
+        }
 
         const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
 
@@ -630,6 +651,7 @@
 
           rootElement.style.setProperty('zoom', zoomScaleString, 'important');
           lastAppliedZoomScaleString = zoomScaleString;
+          lastAppliedScaleValue = lockedZoomScaleFactor;
         } finally {
           isScriptApplyingZoomMutation = false;
         }
@@ -723,8 +745,7 @@
   // ============================================================================
 
   /**
-   * Controlador de la ventana modal de configuración con indicador de estado en tiempo real
-   * y vista previa instantánea.
+   * Controlador de la ventana modal de configuración con indicador de estado en tiempo real.
    */
   const UserInterfaceController = (function () {
     function injectModalStyles() {
@@ -932,15 +953,16 @@
 
         overlayElement.innerHTML = `
           <div class="as-dialog-card">
+             plots
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.2.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v3.3.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
             <div class="as-status-badge-container">
               <div class="as-status-badge">🌐 Motor: ${engine.toUpperCase()}</div>
-              <div class="as-status-badge">📱 Vista Dividida: ${splitContext.isSplitView ? 'ACTIVA (50% Base)' : 'Inactiva (Full)'}</div>
+              <div class="as-status-badge">📱 Vista Dividida: ${splitContext.isSplitView ? `ACTIVA (${splitContext.splitType.toUpperCase()})` : 'Inactiva (Full)'}</div>
               <div class="as-status-badge">🔒 Límites: ${Math.round(config.minimumZoomScaleLimit * 100)}% - ${Math.round(config.maximumZoomScaleLimit * 100)}%</div>
             </div>
 
@@ -1148,7 +1170,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.2', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v3.3', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
