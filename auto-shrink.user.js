@@ -1,6 +1,7 @@
 // ==UserScript==
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
+// @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
 // @version      4.0.1
 // @description  Reducción dinámica del tamaño de página ultra-optimizada a 60/120fps con aceleración GPU, cero asignaciones de memoria en bucle caliente, protección anti-layout-shift y sincronización entre pestañas.
 // @author       Baalgarthem
@@ -220,7 +221,7 @@
         if (window.visualViewport && typeof window.visualViewport.scale === 'number') {
           return Math.abs(window.visualViewport.scale - 1.0) > 0.05;
         }
-      } catch (e) {}
+      } catch (e) { }
       return false;
     }
 
@@ -239,7 +240,7 @@
         }
 
         let monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
-        
+
         if (window.devicePixelRatio && window.devicePixelRatio > 1.25 && window.screen.availWidth) {
           monitorWidth = Math.max(monitorWidth, window.screen.availWidth);
         }
@@ -316,7 +317,7 @@
      * @returns {string} Código CSS optimizado.
      */
     function buildStabilizationCssText(engineName) {
-      const engineSpecificRules = engineName === 'gecko' 
+      const engineSpecificRules = engineName === 'gecko'
         ? `/* Reglas de suavizado de maquetación específicas para Firefox (Gecko) */
            html { layout-smoothing: subpixel-antialiased !important; }`
         : `/* Reglas de suavizado de maquetación específicas para Chromium (Blink) */
@@ -416,7 +417,7 @@
         rootElement.style.setProperty('--auto-shrink-is-fullscreen', isFullscreen ? '1' : '0');
         rootElement.style.removeProperty('width');
         rootElement.style.removeProperty('min-height');
-      } catch (e) {}
+      } catch (e) { }
     }
 
     return {
@@ -449,7 +450,7 @@
         const userAgent = navigator.userAgent.toLowerCase();
         if (userAgent.includes('firefox') || userAgent.includes('gecko/')) return 'gecko';
         if (userAgent.includes('chrome') || userAgent.includes('chromium') || userAgent.includes('edg/')) return 'blink';
-      } catch (e) {}
+      } catch (e) { }
       return 'generic';
     }
 
@@ -508,7 +509,7 @@
             targetParent.appendChild(styleElement);
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     return {
@@ -546,7 +547,7 @@
         if (document.documentElement && document.documentElement.clientWidth > 0) return document.documentElement.clientWidth;
         if (document.body && document.body.clientWidth > 0) return document.body.clientWidth;
         if (window.screen && window.screen.width > 0) return window.screen.width;
-      } catch (e) {}
+      } catch (e) { }
       return 0;
     }
 
@@ -584,7 +585,7 @@
 
         const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
         const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) <= 0.78;
-        
+
         const effectiveMin = isSplitView ? Math.max(config.minimumZoomScaleLimit, 0.40) : config.minimumZoomScaleLimit;
         const effectiveMax = isSplitView ? Math.min(config.maximumZoomScaleLimit, 1.00) : config.maximumZoomScaleLimit;
 
@@ -629,7 +630,7 @@
         } finally {
           isScriptApplyingZoomMutation = false;
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     /**
@@ -668,7 +669,7 @@
           attributes: true,
           attributeFilter: ['style']
         });
-      } catch (e) {}
+      } catch (e) { }
     }
 
     /**
@@ -684,7 +685,7 @@
         });
 
         elementResizeObserver.observe(rootElement);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     /**
@@ -887,7 +888,7 @@
             targetParent.appendChild(styleElement);
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     function destroyModal(overlayElement, listenerBindings) {
@@ -1152,7 +1153,7 @@
             window.open('https://github.com/Baalgarthem/auto-shrink', '_blank');
           });
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     return {
@@ -1168,23 +1169,23 @@
   function initializeEngine() {
     try {
       MediaProtectionService.applyProtectionStyles();
-    } catch (e) {}
+    } catch (e) { }
 
     try {
       ZoomExecutionEngine.applyViewportZoomScale();
-    } catch (e) {}
+    } catch (e) { }
 
     try {
       ZoomExecutionEngine.initializeStyleMutationProtectionObserver();
-    } catch (e) {}
+    } catch (e) { }
 
     try {
       ZoomExecutionEngine.initializeResizeObserver();
-    } catch (e) {}
+    } catch (e) { }
 
     try {
       UserInterfaceController.registerMenuCommands();
-    } catch (e) {}
+    } catch (e) { }
   }
 
   function destroyEngineLifecycle() {
@@ -1194,7 +1195,7 @@
       document.removeEventListener('fullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
       document.removeEventListener('webkitfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
       document.removeEventListener('mozfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (document.documentElement) {
