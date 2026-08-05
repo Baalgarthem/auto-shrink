@@ -1,6 +1,0 @@
-Prueba de demostración v7.4: Cascada garantizada de commits en los 3 niveles del árbol Git.
-Fecha: 2026-08-04
-Nivel 0: auto-shrink (Submódulo) -> Commit SÍ
-Nivel 1: web-userscripts (Submódulo Padre) -> Commit SÍ (Puntero auto-shrink)
-Nivel 2: Scripts (Repositorio Raíz) -> Commit SÍ (Puntero web-userscripts)
-Rama Destino: principal

@@ -1,6 +1,0 @@
-Archivo de prueba para verificacion de cascada ascendente en los 3 niveles del arbol Git.
-Fecha de prueba: 2026-08-04
-Nivel 0: auto-shrink (Submódulo)
-Nivel 1: web-userscripts (Submódulo Padre)
-Nivel 2: Scripts (Repositorio Raiz Principal)
-Rama Destino: principal

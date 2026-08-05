@@ -1,6 +1,0 @@
-Prueba de demostracion final v7.3: Verificacion del commit en los 3 niveles del arbol Git.
-Fecha: 2026-08-04
-Nivel 0: auto-shrink (Submódulo) -> Commit de test-demostracion-final-v73.txt
-Nivel 1: web-userscripts (Submódulo) -> Commit de puntero auto-shrink
-Nivel 2: Scripts (Repositorio Raiz) -> Commit de puntero web-userscripts
-Rama Destino: principal
