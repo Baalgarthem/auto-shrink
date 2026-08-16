@@ -2,8 +2,8 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.2.0
-// @description  Ajusta automáticamente el zoom de cada página al ancho disponible para evitar correcciones manuales al redimensionar o usar vista dividida.
+// @version      5.3.0
+// @description  Ajusta automáticamente el zoom al ancho disponible y corrige las coordenadas del puntero en controles multimedia escalados.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -14,11 +14,12 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_removeValueChangeListener
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v5.2.0 - Escalado automático con coordenadas nativas precisas
+ * Auto-Shrink Userscript v5.3.0 - Escalado automático y corrección multimedia del puntero
  * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
@@ -66,6 +67,7 @@
     thresholdZoomLevelUnder60Percent: 0.70,
     thresholdZoomLevelUnder40Percent: 0.55,
     thresholdZoomLevelUnder20Percent: 0.35,
+    isMediaPointerPrecisionEnabled: true,
     isResetInFullscreenEnabled: true,
     isSplitViewAdaptationEnabled: true
   });
@@ -144,6 +146,7 @@
         thresholdZoomLevelUnder60Percent: threshold60,
         thresholdZoomLevelUnder40Percent: threshold40,
         thresholdZoomLevelUnder20Percent: threshold20,
+        isMediaPointerPrecisionEnabled: !!get('isMediaPointerPrecisionEnabled'),
         isResetInFullscreenEnabled: !!get('isResetInFullscreenEnabled'),
         isSplitViewAdaptationEnabled: !!get('isSplitViewAdaptationEnabled')
       });
@@ -352,8 +355,34 @@
    * el hit-testing nativo y el estado del motor utilicen exactamente el mismo valor.
    */
   const PointerPrecisionService = (function () {
+    const MEDIA_POINTER_EVENT_TYPES = Object.freeze([
+      'pointerdown', 'pointermove', 'pointerup', 'pointerover', 'pointerout', 'pointercancel',
+      'mousedown', 'mousemove', 'mouseup', 'mouseover', 'mouseout', 'click'
+    ]);
+    const MEDIA_PLAYER_SELECTOR = [
+      'video', 'audio', '.html5-video-player', '.video-js', '.vjs-player',
+      '.jwplayer', '.plyr', '.mejs__container', '.shaka-video-container',
+      '[class*="video-player"]', '[class*="videoPlayer"]',
+      '[class*="media-player"]', '[class*="mediaPlayer"]',
+      '[class*="watch-video"]', '[data-video-player]',
+      '[data-testid*="video-player"]'
+    ].join(',');
+    const MEDIA_CONTROL_SELECTOR = '[class*="seek"], [class*="progress"], [class*="timeline"], [role="slider"]';
+
     let isNativeZoomSupportedCache = null;
     let hasLoggedUnsupportedZoom = false;
+    let isMediaPointerPrecisionEnabled = true;
+    let isPointerCorrectionInitialized = false;
+    let activeScaleFactor = 1;
+    let mediaTargetCache = new WeakMap();
+    let correctionModeCache = new WeakMap();
+    let definePageEventProperty = Object.defineProperty;
+
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow.Object && typeof unsafeWindow.Object.defineProperty === 'function') {
+        definePageEventProperty = unsafeWindow.Object.defineProperty;
+      }
+    } catch (e) { }
 
     function isNativeZoomSupported(rootElement) {
       if (isNativeZoomSupportedCache !== null) return isNativeZoomSupportedCache;
@@ -407,7 +436,113 @@
       if (!isScaleSynchronized(rootElement, normalizedScaleFactor)) {
         rootElement.style.setProperty('zoom', zoomScaleString, 'important');
       }
+      activeScaleFactor = normalizedScaleFactor;
       return true;
+    }
+
+    function setMediaPointerPrecisionEnabled(isEnabled) {
+      isMediaPointerPrecisionEnabled = !!isEnabled;
+    }
+
+    function isMediaInteractionTarget(targetElement) {
+      if (!targetElement || targetElement.nodeType !== Node.ELEMENT_NODE || typeof targetElement.closest !== 'function') return false;
+      if (mediaTargetCache.has(targetElement)) return mediaTargetCache.get(targetElement);
+
+      let isMediaTarget = false;
+      try {
+        isMediaTarget = !!targetElement.closest(MEDIA_PLAYER_SELECTOR);
+        if (!isMediaTarget && targetElement.closest(MEDIA_CONTROL_SELECTOR)) {
+          let ancestor = targetElement;
+          for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
+            if (ancestor.querySelector && ancestor.querySelector('video, audio')) {
+              isMediaTarget = true;
+              break;
+            }
+          }
+        }
+      } catch (e) { }
+
+      mediaTargetCache.set(targetElement, isMediaTarget);
+      return isMediaTarget;
+    }
+
+    function detectOffsetCorrectionMode(targetElement, pointerEvent) {
+      const cachedMode = correctionModeCache.get(targetElement);
+      if (cachedMode && Math.abs(cachedMode.scaleFactor - activeScaleFactor) <= SCALE_SYNCHRONIZATION_EPSILON) {
+        return cachedMode.shouldCorrect;
+      }
+
+      try {
+        const layoutWidth = targetElement.offsetWidth;
+        if (!layoutWidth) return false;
+        const rect = targetElement.getBoundingClientRect();
+        if (!rect.width) return false;
+
+        const measuredScaleFactor = rect.width / layoutWidth;
+        const permittedScaleDeviation = Math.max(0.02, activeScaleFactor * 0.08);
+        if (Math.abs(measuredScaleFactor - activeScaleFactor) > permittedScaleDeviation) return false;
+
+        const visualOffsetX = pointerEvent.clientX - rect.left;
+        const logicalOffsetX = visualOffsetX / activeScaleFactor;
+        const coordinateSeparation = Math.abs(logicalOffsetX - visualOffsetX);
+        if (coordinateSeparation < 0.75) return false;
+
+        const nativeOffsetX = pointerEvent.offsetX;
+        const distanceToVisualCoordinates = Math.abs(nativeOffsetX - visualOffsetX);
+        const distanceToLogicalCoordinates = Math.abs(nativeOffsetX - logicalOffsetX);
+        const shouldCorrect = distanceToVisualCoordinates + 0.25 < distanceToLogicalCoordinates;
+
+        correctionModeCache.set(targetElement, {
+          scaleFactor: activeScaleFactor,
+          shouldCorrect
+        });
+        return shouldCorrect;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function defineCorrectedEventCoordinate(pointerEvent, propertyName, correctedValue) {
+      if (!Number.isFinite(correctedValue)) return;
+      try {
+        definePageEventProperty(pointerEvent, propertyName, {
+          configurable: true,
+          enumerable: true,
+          value: correctedValue
+        });
+      } catch (e) { }
+    }
+
+    function correctMediaPointerEvent(pointerEvent) {
+      if (!isMediaPointerPrecisionEnabled || Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) return;
+      const targetElement = pointerEvent.target;
+      if (!isMediaInteractionTarget(targetElement) || !detectOffsetCorrectionMode(targetElement, pointerEvent)) return;
+
+      const inverseScaleFactor = 1 / activeScaleFactor;
+      defineCorrectedEventCoordinate(pointerEvent, 'offsetX', pointerEvent.offsetX * inverseScaleFactor);
+      defineCorrectedEventCoordinate(pointerEvent, 'offsetY', pointerEvent.offsetY * inverseScaleFactor);
+      defineCorrectedEventCoordinate(pointerEvent, 'movementX', pointerEvent.movementX * inverseScaleFactor);
+      defineCorrectedEventCoordinate(pointerEvent, 'movementY', pointerEvent.movementY * inverseScaleFactor);
+    }
+
+    function initializePointerCorrection() {
+      if (isPointerCorrectionInitialized) return;
+      isPointerCorrectionInitialized = true;
+      for (const eventType of MEDIA_POINTER_EVENT_TYPES) {
+        window.addEventListener(eventType, correctMediaPointerEvent, { capture: true, passive: true });
+      }
+    }
+
+    function destroy() {
+      if (isPointerCorrectionInitialized) {
+        for (const eventType of MEDIA_POINTER_EVENT_TYPES) {
+          window.removeEventListener(eventType, correctMediaPointerEvent, true);
+        }
+      }
+      isPointerCorrectionInitialized = false;
+      activeScaleFactor = 1;
+      mediaTargetCache = new WeakMap();
+      correctionModeCache = new WeakMap();
     }
 
     return {
@@ -415,7 +550,10 @@
       formatScale,
       readInlineScale,
       isScaleSynchronized,
-      applyNativeScale
+      applyNativeScale,
+      setMediaPointerPrecisionEnabled,
+      initializePointerCorrection,
+      destroy
     };
   })();
 
@@ -513,6 +651,7 @@
         if (!rootElement) return;
 
         const config = ConfigurationService.getSanitizedConfig();
+        PointerPrecisionService.setMediaPointerPrecisionEnabled(config.isMediaPointerPrecisionEnabled);
         const currentViewportWidthPx = getValidViewportWidth();
         if (!currentViewportWidthPx) return;
         const monitorWidth = ViewportMetricsService.getScreenWidth() || currentViewportWidthPx;
@@ -861,7 +1000,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.2.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.3.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -882,6 +1021,10 @@
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-reset-fullscreen" ${config.isResetInFullscreenEnabled ? 'checked' : ''}>
                   📺 Restaurar zoom al 100% nativo al poner el video en Pantalla Completa
+                </label>
+                <label class="as-checkbox-label">
+                  <input type="checkbox" id="as-checkbox-media-pointer" ${config.isMediaPointerPrecisionEnabled ? 'checked' : ''}>
+                  🎯 Corregir coordenadas del cursor en líneas de tiempo multimedia
                 </label>
               </div>
             </div>
@@ -1016,6 +1159,7 @@
 
           const isFullscreen = overlayElement.querySelector('#as-checkbox-reset-fullscreen').checked;
           const isSplitView = overlayElement.querySelector('#as-checkbox-split-view').checked;
+          const isMediaPointerPrecisionEnabled = overlayElement.querySelector('#as-checkbox-media-pointer').checked;
 
           ConfigurationService.setMany({
             scalingMode: modeVal,
@@ -1026,6 +1170,7 @@
             thresholdZoomLevelUnder60Percent: s60,
             thresholdZoomLevelUnder40Percent: s40,
             thresholdZoomLevelUnder20Percent: s20,
+            isMediaPointerPrecisionEnabled,
             isResetInFullscreenEnabled: isFullscreen,
             isSplitViewAdaptationEnabled: isSplitView
           });
@@ -1057,7 +1202,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.2', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.3', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             ZoomExecutionEngine.applyViewportZoomScale(true);
@@ -1086,6 +1231,7 @@
     isEngineInitialized = true;
 
     ZoomExecutionEngine.rememberOriginalStyle();
+    PointerPrecisionService.initializePointerCorrection();
     try {
       ZoomExecutionEngine.applyViewportZoomScale();
     } catch (e) { }
@@ -1104,6 +1250,7 @@
     isEngineInitialized = false;
     try {
       ZoomExecutionEngine.destroy();
+      PointerPrecisionService.destroy();
       ConfigurationService.destroy();
       window.removeEventListener('resize', handleViewportResize);
       window.removeEventListener('orientationchange', handleEnvironmentChange);
