@@ -2,7 +2,7 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.4.0
+// @version      5.5.1
 // @description  Ajusta automáticamente el zoom al ancho disponible y corrige las coordenadas del puntero en controles multimedia escalados.
 // @author       Baalgarthem
 // @match        *://*/*
@@ -19,7 +19,7 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v5.4.0 - Escalado automático y alineación multimedia completa
+ * Auto-Shrink Userscript v5.5.1 - Escalado automático y coordenadas adaptativas de hover
  * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
@@ -368,6 +368,12 @@
       '[data-testid*="video-player"]'
     ].join(',');
     const MEDIA_CONTROL_SELECTOR = '[class*="seek"], [class*="progress"], [class*="timeline"], [role="slider"]';
+    const MEDIA_TIMELINE_SELECTOR = [
+      '.ytp-progress-bar-container', '.vjs-progress-holder', '.jw-slider-time',
+      '.plyr__progress', '.mejs__time-rail', '.shaka-seek-bar-container',
+      '[class*="seek-bar" i]', '[class*="seekbar" i]',
+      '[class*="progress-bar" i]', '[class*="timeline" i]', '[role="slider"]'
+    ].join(',');
     const MEDIA_PLAYER_CONTAINER_SELECTOR = [
       '.html5-video-player', '.video-js', '.vjs-player', '.jwplayer', '.plyr',
       '.mejs__container', '.shaka-video-container', '[class*="video-player"]',
@@ -396,13 +402,13 @@
     let activeScaleFactor = 1;
     let mediaTargetCache = new WeakMap();
     let correctionModeCache = new WeakMap();
-    let tooltipAlignmentStateCache = new WeakMap();
+    let hoverCoordinateModeCache = new WeakMap();
     let mediaTooltipCandidateCache = new WeakMap();
-    let modifiedMediaTooltips = new Set();
-    let tooltipAlignmentFrameRequestId = null;
+    let tooltipAnalysisFrameRequestId = null;
     let pendingTooltipPointerX = 0;
     let pendingTooltipPointerY = 0;
     let pendingTooltipPlayerRoot = null;
+    let pendingTooltipTimelineControl = null;
     let definePageEventProperty = Object.defineProperty;
 
     try {
@@ -465,30 +471,14 @@
       }
       activeScaleFactor = normalizedScaleFactor;
       if (Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) {
-        restoreModifiedMediaTooltipAlignment();
+        hoverCoordinateModeCache = new WeakMap();
       }
       return true;
     }
 
     function setMediaPointerPrecisionEnabled(isEnabled) {
       isMediaPointerPrecisionEnabled = !!isEnabled;
-      if (!isMediaPointerPrecisionEnabled) restoreModifiedMediaTooltipAlignment();
-    }
-
-    function restoreModifiedMediaTooltipAlignment() {
-      for (const tooltipElement of modifiedMediaTooltips) {
-        const alignmentState = tooltipAlignmentStateCache.get(tooltipElement);
-        if (!alignmentState || !tooltipElement.style) continue;
-        if (alignmentState.originalInlineTranslate === '') tooltipElement.style.removeProperty('translate');
-        else tooltipElement.style.setProperty(
-          'translate',
-          alignmentState.originalInlineTranslate,
-          alignmentState.originalInlineTranslatePriority
-        );
-      }
-      tooltipAlignmentStateCache = new WeakMap();
-      mediaTooltipCandidateCache = new WeakMap();
-      modifiedMediaTooltips = new Set();
+      if (!isMediaPointerPrecisionEnabled) hoverCoordinateModeCache = new WeakMap();
     }
 
     function isMediaInteractionTarget(targetElement) {
@@ -639,72 +629,162 @@
       return bestCandidate;
     }
 
-    function alignPendingMediaTooltip() {
-      tooltipAlignmentFrameRequestId = null;
+    function findMediaTimelineControl(targetElement, playerRoot) {
+      try {
+        const directControl = targetElement.closest(MEDIA_TIMELINE_SELECTOR);
+        if (directControl && directControl.offsetWidth > 0) return directControl;
+        const knownControl = playerRoot.querySelector(MEDIA_TIMELINE_SELECTOR);
+        if (knownControl && knownControl.offsetWidth > 0) return knownControl;
+      } catch (e) { }
+      return null;
+    }
+
+    function getTimelineEffectiveZoom(timelineControl, timelineRect) {
+      try {
+        const currentCssZoom = Number(timelineControl.currentCSSZoom);
+        if (Number.isFinite(currentCssZoom) && currentCssZoom > 0) return currentCssZoom;
+      } catch (e) { }
+
+      const layoutWidth = timelineControl.offsetWidth;
+      if (timelineRect && timelineRect.width > 0 && layoutWidth > 0) {
+        return timelineRect.width / layoutWidth;
+      }
+      return activeScaleFactor;
+    }
+
+    function parseTimeTextToSeconds(text) {
+      const match = String(text || '').match(/-?\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b/);
+      if (!match) return NaN;
+      const isNegative = match[0].startsWith('-');
+      const parts = match[0].replace('-', '').split(':').map(Number);
+      let seconds = 0;
+      for (const part of parts) seconds = seconds * 60 + part;
+      return isNegative ? -seconds : seconds;
+    }
+
+    function getMediaDurationSeconds(playerRoot) {
+      try {
+        const mediaElement = playerRoot.matches('video, audio')
+          ? playerRoot
+          : playerRoot.querySelector('video, audio');
+        if (mediaElement && Number.isFinite(mediaElement.duration) && mediaElement.duration > 0) {
+          return mediaElement.duration;
+        }
+
+        const timeMatches = String(playerRoot.textContent || '').match(/\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b/g) || [];
+        let longestTime = 0;
+        for (const timeText of timeMatches) {
+          const seconds = parseTimeTextToSeconds(timeText);
+          if (Number.isFinite(seconds)) longestTime = Math.max(longestTime, seconds);
+        }
+        return longestTime || NaN;
+      } catch (e) {
+        return NaN;
+      }
+    }
+
+    function analyzePendingMediaTooltip() {
+      tooltipAnalysisFrameRequestId = null;
       const playerRoot = pendingTooltipPlayerRoot;
-      if (!playerRoot || !playerRoot.isConnected || Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) return;
+      const timelineControl = pendingTooltipTimelineControl;
+      if (!playerRoot || !timelineControl || !playerRoot.isConnected || !timelineControl.isConnected) return;
 
       try {
         const playerRect = playerRoot.getBoundingClientRect();
+        const timelineRect = timelineControl.getBoundingClientRect();
+        if (!timelineRect.width || !timelineControl.offsetWidth) return;
+        const effectiveZoom = getTimelineEffectiveZoom(timelineControl, timelineRect);
+        const existingCorrectionMode = hoverCoordinateModeCache.get(timelineControl);
+        if (existingCorrectionMode &&
+            Math.abs(existingCorrectionMode.scaleFactor - effectiveZoom) <= SCALE_SYNCHRONIZATION_EPSILON) return;
         const tooltipElement = findBestMediaTooltip(playerRoot, playerRect);
         if (!tooltipElement) return;
 
-        let alignmentState = tooltipAlignmentStateCache.get(tooltipElement);
-        const currentInlineTranslate = tooltipElement.style.getPropertyValue('translate');
-        if (!alignmentState) {
-          const computedTranslate = getComputedStyle(tooltipElement).translate;
-          if (computedTranslate && computedTranslate !== 'none' && computedTranslate !== '0px') return;
-          alignmentState = {
-            originalInlineTranslate: currentInlineTranslate,
-            originalInlineTranslatePriority: tooltipElement.style.getPropertyPriority('translate'),
-            appliedInlineTranslate: '',
-            logicalOffsetX: 0
-          };
-          tooltipAlignmentStateCache.set(tooltipElement, alignmentState);
-          modifiedMediaTooltips.add(tooltipElement);
-        } else if (alignmentState.appliedInlineTranslate && currentInlineTranslate !== alignmentState.appliedInlineTranslate) {
-          alignmentState.originalInlineTranslate = currentInlineTranslate;
-          alignmentState.originalInlineTranslatePriority = tooltipElement.style.getPropertyPriority('translate');
-          alignmentState.appliedInlineTranslate = '';
-          alignmentState.logicalOffsetX = 0;
+        const visualRatio = Math.max(0, Math.min(1, (pendingTooltipPointerX - timelineRect.left) / timelineRect.width));
+        const uncorrectedLayoutRatio = Math.max(0, Math.min(1, (pendingTooltipPointerX - timelineRect.left) / timelineControl.offsetWidth));
+        let shouldCorrectClientCoordinates = false;
+        let hasReliableDiagnosis = false;
+
+        const tooltipTimeSeconds = parseTimeTextToSeconds(tooltipElement.textContent);
+        const durationSeconds = getMediaDurationSeconds(playerRoot);
+        if (Number.isFinite(tooltipTimeSeconds) && Number.isFinite(durationSeconds) && durationSeconds > 0) {
+          const absoluteTooltipSeconds = Math.abs(tooltipTimeSeconds);
+          const tooltipRatio = Math.max(0, Math.min(1,
+            tooltipTimeSeconds < 0
+              ? 1 - absoluteTooltipSeconds / durationSeconds
+              : absoluteTooltipSeconds / durationSeconds
+          ));
+          const distanceToVisualRatio = Math.abs(tooltipRatio - visualRatio);
+          const distanceToUncorrectedRatio = Math.abs(tooltipRatio - uncorrectedLayoutRatio);
+          if (Math.abs(distanceToVisualRatio - distanceToUncorrectedRatio) > 0.025) {
+            shouldCorrectClientCoordinates = distanceToUncorrectedRatio < distanceToVisualRatio;
+            hasReliableDiagnosis = true;
+          }
         }
 
-        const tooltipRect = tooltipElement.getBoundingClientRect();
-        const currentCenterX = (tooltipRect.left + tooltipRect.right) / 2;
-        const baseCenterX = currentCenterX - alignmentState.logicalOffsetX * activeScaleFactor;
-        const halfTooltipWidth = tooltipRect.width / 2;
-        const minimumCenterX = playerRect.left + halfTooltipWidth;
-        const maximumCenterX = playerRect.right - halfTooltipWidth;
-        const desiredCenterX = Math.max(minimumCenterX, Math.min(maximumCenterX, pendingTooltipPointerX));
-        const requiredLogicalOffsetX = (desiredCenterX - baseCenterX) / activeScaleFactor;
+        if (!hasReliableDiagnosis) {
+          const tooltipRect = tooltipElement.getBoundingClientRect();
+          const tooltipCenterX = (tooltipRect.left + tooltipRect.right) / 2;
+          const predictedUncorrectedCenterX = timelineRect.left +
+            (pendingTooltipPointerX - timelineRect.left) * effectiveZoom;
+          const distanceToPointer = Math.abs(tooltipCenterX - pendingTooltipPointerX);
+          const distanceToUncorrectedPosition = Math.abs(tooltipCenterX - predictedUncorrectedCenterX);
+          if (Math.abs(distanceToPointer - distanceToUncorrectedPosition) > 4) {
+            shouldCorrectClientCoordinates = distanceToUncorrectedPosition < distanceToPointer;
+            hasReliableDiagnosis = true;
+          }
+        }
 
-        if (Math.abs(requiredLogicalOffsetX - alignmentState.logicalOffsetX) < 0.1) return;
-        const translateValue = requiredLogicalOffsetX.toFixed(3) + 'px 0px';
-        tooltipElement.style.setProperty('translate', translateValue, 'important');
-        alignmentState.appliedInlineTranslate = tooltipElement.style.getPropertyValue('translate');
-        alignmentState.logicalOffsetX = requiredLogicalOffsetX;
+        if (hasReliableDiagnosis) {
+          hoverCoordinateModeCache.set(timelineControl, {
+            scaleFactor: effectiveZoom,
+            shouldCorrect: shouldCorrectClientCoordinates
+          });
+        }
       } catch (e) { }
     }
 
-    function scheduleMediaTooltipAlignment(pointerEvent, targetElement) {
-      if (pointerEvent.type !== 'pointermove' && pointerEvent.type !== 'mousemove' &&
-          pointerEvent.type !== 'pointerover' && pointerEvent.type !== 'mouseover' &&
-          pointerEvent.type !== 'pointerdown' && pointerEvent.type !== 'mousedown') return;
-      const playerRoot = findMediaPlayerRoot(targetElement);
-      if (!playerRoot) return;
-
-      pendingTooltipPointerX = pointerEvent.clientX;
+    function scheduleMediaTooltipAnalysis(pointerEvent, playerRoot, timelineControl, nativeClientX) {
+      pendingTooltipPointerX = nativeClientX;
       pendingTooltipPointerY = pointerEvent.clientY;
       pendingTooltipPlayerRoot = playerRoot;
-      if (tooltipAlignmentFrameRequestId === null) {
-        tooltipAlignmentFrameRequestId = requestAnimationFrame(alignPendingMediaTooltip);
+      pendingTooltipTimelineControl = timelineControl;
+      if (tooltipAnalysisFrameRequestId === null) {
+        tooltipAnalysisFrameRequestId = requestAnimationFrame(analyzePendingMediaTooltip);
       }
+    }
+
+    function isMediaHoverEvent(eventType) {
+      return eventType === 'pointermove' || eventType === 'mousemove' ||
+        eventType === 'pointerover' || eventType === 'mouseover';
+    }
+
+    function applyHoverClientCoordinateCorrection(pointerEvent, timelineControl, nativeClientX) {
+      const correctionMode = hoverCoordinateModeCache.get(timelineControl);
+      if (!correctionMode || !correctionMode.shouldCorrect) return;
+
+      try {
+        const rect = timelineControl.getBoundingClientRect();
+        if (!rect.width || !timelineControl.offsetWidth) return;
+        const effectiveZoom = getTimelineEffectiveZoom(timelineControl, rect);
+        if (Math.abs(correctionMode.scaleFactor - effectiveZoom) > SCALE_SYNCHRONIZATION_EPSILON) {
+          correctionMode.scaleFactor = effectiveZoom;
+        }
+        const correctedClientX = rect.left +
+          (nativeClientX - rect.left) / effectiveZoom;
+        const correctionDeltaX = correctedClientX - nativeClientX;
+        const nativePageX = pointerEvent.pageX;
+        defineCorrectedEventCoordinate(pointerEvent, 'clientX', correctedClientX);
+        defineCorrectedEventCoordinate(pointerEvent, 'x', correctedClientX);
+        defineCorrectedEventCoordinate(pointerEvent, 'pageX', nativePageX + correctionDeltaX);
+      } catch (e) { }
     }
 
     function correctMediaPointerEvent(pointerEvent) {
       if (!isMediaPointerPrecisionEnabled || Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) return;
       const targetElement = pointerEvent.target;
       if (!isMediaInteractionTarget(targetElement)) return;
+      const nativeClientX = pointerEvent.clientX;
 
       if (detectOffsetCorrectionMode(targetElement, pointerEvent)) {
         const inverseScaleFactor = 1 / activeScaleFactor;
@@ -714,7 +794,14 @@
         defineCorrectedEventCoordinate(pointerEvent, 'movementY', pointerEvent.movementY * inverseScaleFactor);
       }
 
-      scheduleMediaTooltipAlignment(pointerEvent, targetElement);
+      if (isMediaHoverEvent(pointerEvent.type)) {
+        const playerRoot = findMediaPlayerRoot(targetElement);
+        if (!playerRoot) return;
+        const timelineControl = findMediaTimelineControl(targetElement, playerRoot);
+        if (!timelineControl) return;
+        applyHoverClientCoordinateCorrection(pointerEvent, timelineControl, nativeClientX);
+        scheduleMediaTooltipAnalysis(pointerEvent, playerRoot, timelineControl, nativeClientX);
+      }
     }
 
     function initializePointerCorrection() {
@@ -726,9 +813,9 @@
     }
 
     function destroy() {
-      if (tooltipAlignmentFrameRequestId !== null) {
-        cancelAnimationFrame(tooltipAlignmentFrameRequestId);
-        tooltipAlignmentFrameRequestId = null;
+      if (tooltipAnalysisFrameRequestId !== null) {
+        cancelAnimationFrame(tooltipAnalysisFrameRequestId);
+        tooltipAnalysisFrameRequestId = null;
       }
       if (isPointerCorrectionInitialized) {
         for (const eventType of MEDIA_POINTER_EVENT_TYPES) {
@@ -737,10 +824,12 @@
       }
       isPointerCorrectionInitialized = false;
       activeScaleFactor = 1;
-      restoreModifiedMediaTooltipAlignment();
       mediaTargetCache = new WeakMap();
       correctionModeCache = new WeakMap();
+      hoverCoordinateModeCache = new WeakMap();
+      mediaTooltipCandidateCache = new WeakMap();
       pendingTooltipPlayerRoot = null;
+      pendingTooltipTimelineControl = null;
     }
 
     return {
@@ -1198,7 +1287,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.4.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.5.1</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1400,7 +1489,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.4', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.5.1', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             ZoomExecutionEngine.applyViewportZoomScale(true);
