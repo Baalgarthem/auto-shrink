@@ -2,7 +2,7 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.0.0
+// @version      5.2.0
 // @description  Ajusta automáticamente el zoom de cada página al ancho disponible para evitar correcciones manuales al redimensionar o usar vista dividida.
 // @author       Baalgarthem
 // @match        *://*/*
@@ -18,13 +18,13 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v5.0.0 - Escalado automático estable y no invasivo
+ * Auto-Shrink Userscript v5.2.0 - Escalado automático con coordenadas nativas precisas
  * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
  * 2. ViewportMetricsService: Medición del viewport y cálculo proporcional de la escala.
- * 3. VisualStabilizationService: Variables CSS informativas sin alterar estilos ajenos.
- * 4. MediaProtectionService: Detección del motor y del estado de pantalla completa.
+ * 3. PointerPrecisionService: Escala nativa única para pintura, hit-testing y estado interno.
+ * 4. BrowserEnvironmentService: Detección del motor y del estado de pantalla completa.
  * 5. ZoomExecutionEngine: Aplicación idempotente, histéresis y agrupación mediante rAF.
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
@@ -69,11 +69,14 @@
     isResetInFullscreenEnabled: true,
     isSplitViewAdaptationEnabled: true
   });
+  const CONFIGURATION_KEYS = Object.freeze(Object.keys(DEFAULT_CONFIGURATION));
 
   const CONFIGURATION_MODAL_OVERLAY_ID = 'auto-shrink-configuration-modal-overlay-v2';
-  const VISUAL_STABILIZATION_STYLE_ID = 'auto-shrink-visual-stabilization-styles-v5';
   const MODAL_STYLE_ID = 'auto-shrink-modal-styles-v5';
-  const HYSTERESIS_THRESHOLD = 0.0025;
+  const SCALE_UPDATE_HYSTERESIS = 0.0025;
+  const SCALE_SYNCHRONIZATION_EPSILON = 0.000001;
+  const SCALE_DECIMAL_FACTOR = 1000000;
+  const BREAKPOINT_HYSTERESIS = 0.01;
 
   // ============================================================================
   // 1. SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
@@ -94,7 +97,7 @@
     function loadAll() {
       try {
         if (typeof GM_getValue !== 'function') return;
-        for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
+        for (const key of CONFIGURATION_KEYS) {
           const storedValue = GM_getValue(key, DEFAULT_CONFIGURATION[key]);
           if (storedValue !== undefined && storedValue !== null) {
             activeCache[key] = storedValue;
@@ -127,15 +130,20 @@
       const rawMax = sanitizeNumeric(get('maximumZoomScaleLimit'), 1.00, 0.50, 2.00);
       const maxLimit = Math.max(minLimit, rawMax);
 
+      const threshold80 = sanitizeNumeric(get('thresholdZoomLevelUnder80Percent'), 0.85, minLimit, maxLimit);
+      const threshold60 = Math.min(threshold80, sanitizeNumeric(get('thresholdZoomLevelUnder60Percent'), 0.70, minLimit, maxLimit));
+      const threshold40 = Math.min(threshold60, sanitizeNumeric(get('thresholdZoomLevelUnder40Percent'), 0.55, minLimit, maxLimit));
+      const threshold20 = Math.min(threshold40, sanitizeNumeric(get('thresholdZoomLevelUnder20Percent'), 0.35, minLimit, maxLimit));
+
       sanitizedSnapshotCache = Object.freeze({
         scalingMode: get('scalingMode') === SCALING_MODES.THRESHOLDS ? SCALING_MODES.THRESHOLDS : SCALING_MODES.CONTINUOUS,
         referenceBaseWidthSetting: sanitizeReferenceBaseWidth(get('referenceBaseWidthSetting')),
         minimumZoomScaleLimit: minLimit,
         maximumZoomScaleLimit: maxLimit,
-        thresholdZoomLevelUnder80Percent: sanitizeNumeric(get('thresholdZoomLevelUnder80Percent'), 0.85, minLimit, maxLimit),
-        thresholdZoomLevelUnder60Percent: sanitizeNumeric(get('thresholdZoomLevelUnder60Percent'), 0.70, minLimit, maxLimit),
-        thresholdZoomLevelUnder40Percent: sanitizeNumeric(get('thresholdZoomLevelUnder40Percent'), 0.55, minLimit, maxLimit),
-        thresholdZoomLevelUnder20Percent: sanitizeNumeric(get('thresholdZoomLevelUnder20Percent'), 0.35, minLimit, maxLimit),
+        thresholdZoomLevelUnder80Percent: threshold80,
+        thresholdZoomLevelUnder60Percent: threshold60,
+        thresholdZoomLevelUnder40Percent: threshold40,
+        thresholdZoomLevelUnder20Percent: threshold20,
         isResetInFullscreenEnabled: !!get('isResetInFullscreenEnabled'),
         isSplitViewAdaptationEnabled: !!get('isSplitViewAdaptationEnabled')
       });
@@ -150,23 +158,34 @@
      */
     function set(key, value) {
       try {
+        if (!Object.prototype.hasOwnProperty.call(DEFAULT_CONFIGURATION, key) || Object.is(activeCache[key], value)) return false;
         activeCache[key] = value;
         sanitizedSnapshotCache = null; // Invalidar instantánea
         if (typeof GM_setValue === 'function') {
           GM_setValue(key, value);
         }
+        return true;
       } catch (e) {
         console.warn(`[Auto-Shrink] Error guardando clave "${key}":`, e);
+        return false;
       }
+    }
+
+    function setMany(values) {
+      let hasChanges = false;
+      for (const key of CONFIGURATION_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(values, key)) {
+          hasChanges = set(key, values[key]) || hasChanges;
+        }
+      }
+      return hasChanges;
     }
 
     /**
      * Restablece todas las opciones de configuración a sus valores por defecto.
      */
     function resetAll() {
-      for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
-        set(key, DEFAULT_CONFIGURATION[key]);
-      }
+      return setMany(DEFAULT_CONFIGURATION);
     }
 
     /**
@@ -193,7 +212,7 @@
       loadAll();
       if (typeof GM_addValueChangeListener !== 'function') return;
 
-      for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
+      for (const key of CONFIGURATION_KEYS) {
         try {
           const listenerId = GM_addValueChangeListener(key, (_name, _oldValue, newValue, isRemote) => {
             if (!isRemote) return;
@@ -219,9 +238,8 @@
     initializeSynchronization();
 
     return {
-      get,
       getSanitizedConfig,
-      set,
+      setMany,
       resetAll,
       sanitizeNumeric,
       destroy
@@ -236,6 +254,8 @@
    * Servicio encargado de calcular métricas estables del viewport y la pantalla de referencia.
    */
   const ViewportMetricsService = (function () {
+    const THRESHOLD_BOUNDARIES = Object.freeze([0.20, 0.40, 0.60, 0.80]);
+    let activeThresholdBand = -1;
 
     /**
      * Detecta si el usuario está realizando un gesto de pinch-zoom táctil nativo.
@@ -267,16 +287,11 @@
       return 0;
     }
 
-    function calculateReferenceBaseWidth(currentViewportWidthPx) {
+    function calculateReferenceBaseWidth(currentViewportWidthPx, referenceBaseWidthSetting, screenWidthPx) {
       try {
-        const setting = ConfigurationService.getSanitizedConfig().referenceBaseWidthSetting;
+        const setting = referenceBaseWidthSetting;
         if (typeof setting === 'number' && setting > 0) return setting;
-        if (typeof setting === 'string' && setting !== 'auto') {
-          const parsed = parseInt(setting, 10);
-          if (Number.isFinite(parsed) && parsed > 0) return parsed;
-        }
-
-        const screenWidth = getScreenWidth();
+        const screenWidth = screenWidthPx || getScreenWidth();
         return screenWidth > 0 ? Math.max(currentViewportWidthPx || 0, screenWidth) : (currentViewportWidthPx || 1920);
       } catch (e) {
         return 1920;
@@ -287,33 +302,37 @@
      * Computa el factor de escala aplicando el modo activo y respetando límites efectivos.
      * @param {number} currentViewportWidthPx - Ancho actual del viewport.
      * @param {number} referenceBaseWidthPx - Ancho base de referencia.
-     * @param {number} effectiveMin - Límite mínimo efectivo.
-     * @param {number} effectiveMax - Límite máximo efectivo.
+     * @param {Object} config - Configuración saneada activa.
      * @returns {number} Factor de zoom restringido dentro de límites.
      */
-    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, effectiveMin, effectiveMax) {
-      const config = ConfigurationService.getSanitizedConfig();
+    function computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, config) {
       const ratio = currentViewportWidthPx / referenceBaseWidthPx;
 
       let computedScale = 1.0;
 
       if (config.scalingMode === SCALING_MODES.THRESHOLDS) {
-        if (ratio < 0.20) {
-          computedScale = config.thresholdZoomLevelUnder20Percent;
-        } else if (ratio < 0.40) {
-          computedScale = config.thresholdZoomLevelUnder40Percent;
-        } else if (ratio < 0.60) {
-          computedScale = config.thresholdZoomLevelUnder60Percent;
-        } else if (ratio < 0.80) {
-          computedScale = config.thresholdZoomLevelUnder80Percent;
+        if (activeThresholdBand < 0) {
+          activeThresholdBand = ratio < 0.20 ? 0 : ratio < 0.40 ? 1 : ratio < 0.60 ? 2 : ratio < 0.80 ? 3 : 4;
         } else {
-          computedScale = effectiveMax;
+          while (activeThresholdBand < 4 && ratio >= THRESHOLD_BOUNDARIES[activeThresholdBand] + BREAKPOINT_HYSTERESIS) {
+            activeThresholdBand++;
+          }
+          while (activeThresholdBand > 0 && ratio < THRESHOLD_BOUNDARIES[activeThresholdBand - 1] - BREAKPOINT_HYSTERESIS) {
+            activeThresholdBand--;
+          }
         }
+
+        if (activeThresholdBand === 0) computedScale = config.thresholdZoomLevelUnder20Percent;
+        else if (activeThresholdBand === 1) computedScale = config.thresholdZoomLevelUnder40Percent;
+        else if (activeThresholdBand === 2) computedScale = config.thresholdZoomLevelUnder60Percent;
+        else if (activeThresholdBand === 3) computedScale = config.thresholdZoomLevelUnder80Percent;
+        else computedScale = config.maximumZoomScaleLimit;
       } else {
-        computedScale = ratio >= 1.0 ? Math.min(1.00, effectiveMax) : ratio;
+        activeThresholdBand = -1;
+        computedScale = ratio >= 1.0 ? Math.min(1.00, config.maximumZoomScaleLimit) : ratio;
       }
 
-      return Math.max(effectiveMin, Math.min(effectiveMax, computedScale));
+      return Math.max(config.minimumZoomScaleLimit, Math.min(config.maximumZoomScaleLimit, computedScale));
     }
 
     return {
@@ -325,88 +344,89 @@
   })();
 
   // ============================================================================
-  // 3. SERVICIO DE ESTABILIZACIÓN VISUAL Y RESPONSIVA (VisualStabilizationService)
+  // 3. PRECISIÓN DE COORDENADAS Y ESCALA NATIVA (PointerPrecisionService)
   // ============================================================================
 
   /**
-   * Publica métricas de Auto-Shrink como variables CSS sin imponer reglas a la página.
+   * Mantiene una única representación normalizada de la escala para que la pintura,
+   * el hit-testing nativo y el estado del motor utilicen exactamente el mismo valor.
    */
-  const VisualStabilizationService = (function () {
+  const PointerPrecisionService = (function () {
+    let isNativeZoomSupportedCache = null;
+    let hasLoggedUnsupportedZoom = false;
 
-    /**
-     * Genera la hoja de estilos de estabilización visual adaptada al motor del navegador.
-     * @param {string} engineName - Nombre del motor del navegador ('gecko' o 'blink').
-     * @returns {string} Código CSS optimizado.
-     */
-    function buildStabilizationCssText() {
-      return `
-        /* Solamente propiedades propias: no se altera la maquetación de la página. */
-        :root {
-          --auto-shrink-scale: 1;
-          --auto-shrink-inv-scale: 1;
-          --auto-shrink-viewport-width: 100vw;
-        }
-      `;
-    }
-
-    /**
-     * Inyecta dinámicamente las reglas de estabilización visual en el documento.
-     * @param {string} engineName - Nombre del motor del navegador.
-     */
-    function injectStabilizationStyles() {
+    function isNativeZoomSupported(rootElement) {
+      if (isNativeZoomSupportedCache !== null) return isNativeZoomSupportedCache;
       try {
-        if (document.getElementById(VISUAL_STABILIZATION_STYLE_ID)) return;
-        const styleElement = document.createElement('style');
-        styleElement.id = VISUAL_STABILIZATION_STYLE_ID;
-        styleElement.textContent = buildStabilizationCssText();
-        const targetParent = document.head || document.documentElement;
-        if (targetParent) targetParent.appendChild(styleElement);
+        const styleDeclaration = rootElement && rootElement.style
+          ? rootElement.style
+          : document.createElement('div').style;
+        const hasStyleProperty = 'zoom' in styleDeclaration;
+        const passesFeatureQuery = typeof CSS === 'undefined' || typeof CSS.supports !== 'function' || CSS.supports('zoom', '1');
+        isNativeZoomSupportedCache = hasStyleProperty && passesFeatureQuery;
       } catch (e) {
-        console.warn('[Auto-Shrink] Error inyectando hoja de estabilización visual:', e);
+        isNativeZoomSupportedCache = false;
       }
+      return isNativeZoomSupportedCache;
     }
 
-    /**
-     * Aplica las variables CSS globales de maquetación y compensación de scrollbar.
-     * @param {HTMLElement} rootElement - Elemento html.
-     * @param {number} scaleFactor - Factor de zoom activo.
-     * @param {number} viewportWidthPx - Ancho del viewport.
-     * @param {boolean} isSplitView - Indicador de vista dividida.
-     * @param {number} referenceBasePx - Ancho base activo.
-     */
-    function updateGlobalCssVariables(rootElement, scaleFactor, viewportWidthPx, isSplitView, referenceBasePx) {
-      if (!rootElement || !rootElement.style) return;
-      try {
-        const zoomScaleString = scaleFactor.toFixed(4);
-        const inverseScaleString = (1 / scaleFactor).toFixed(4);
-        const viewportHeightPx = window.innerHeight || 1080;
-        const aspectRatioString = (viewportWidthPx / viewportHeightPx).toFixed(2);
-        const isFullscreen = MediaProtectionService.isDocumentInFullscreenMode();
+    function normalizeScale(scaleFactor) {
+      if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) return 1;
+      return Math.round(scaleFactor * SCALE_DECIMAL_FACTOR) / SCALE_DECIMAL_FACTOR;
+    }
 
+    function formatScale(normalizedScaleFactor) {
+      return normalizedScaleFactor.toFixed(6);
+    }
+
+    function readInlineScale(rootElement) {
+      if (!rootElement || !rootElement.style) return NaN;
+      return parseFloat(rootElement.style.getPropertyValue('zoom'));
+    }
+
+    function isScaleSynchronized(rootElement, expectedScaleFactor) {
+      const currentScaleFactor = readInlineScale(rootElement);
+      return Number.isFinite(currentScaleFactor) &&
+        Math.abs(currentScaleFactor - expectedScaleFactor) <= SCALE_SYNCHRONIZATION_EPSILON &&
+        rootElement.style.getPropertyPriority('zoom') === 'important';
+    }
+
+    function applyNativeScale(rootElement, normalizedScaleFactor, zoomScaleString) {
+      if (!rootElement || !rootElement.style) return false;
+      if (!isNativeZoomSupported(rootElement)) {
+        if (!hasLoggedUnsupportedZoom) {
+          hasLoggedUnsupportedZoom = true;
+          console.warn('[Auto-Shrink] El navegador no admite CSS zoom nativo; se conserva escala 1:1 para no desalinear el puntero.');
+        }
+        return false;
+      }
+
+      if (rootElement.style.getPropertyValue('--auto-shrink-scale') !== zoomScaleString) {
         rootElement.style.setProperty('--auto-shrink-scale', zoomScaleString);
-        rootElement.style.setProperty('--auto-shrink-inv-scale', inverseScaleString);
-        rootElement.style.setProperty('--auto-shrink-viewport-width', viewportWidthPx + 'px');
-        rootElement.style.setProperty('--auto-shrink-is-split-view', isSplitView ? '1' : '0');
-        rootElement.style.setProperty('--auto-shrink-effective-base', referenceBasePx + 'px');
-        rootElement.style.setProperty('--auto-shrink-aspect-ratio', aspectRatioString);
-        rootElement.style.setProperty('--auto-shrink-is-fullscreen', isFullscreen ? '1' : '0');
-      } catch (e) { }
+      }
+      if (!isScaleSynchronized(rootElement, normalizedScaleFactor)) {
+        rootElement.style.setProperty('zoom', zoomScaleString, 'important');
+      }
+      return true;
     }
 
     return {
-      injectStabilizationStyles,
-      updateGlobalCssVariables
+      normalizeScale,
+      formatScale,
+      readInlineScale,
+      isScaleSynchronized,
+      applyNativeScale
     };
   })();
 
   // ============================================================================
-  // 4. SERVICIO DE ENTORNO Y PANTALLA COMPLETA (MediaProtectionService)
+  // 4. SERVICIO DE ENTORNO Y PANTALLA COMPLETA (BrowserEnvironmentService)
   // ============================================================================
 
   /**
    * Servicio encargado de detectar el motor del navegador y la pantalla completa.
    */
-  const MediaProtectionService = (function () {
+  const BrowserEnvironmentService = (function () {
     /**
      * Identifica el motor nativo del navegador para aplicar optimizaciones específicas.
      * @returns {string} 'gecko' (Firefox), 'blink' (Chrome/Edge/Brave) o 'generic'.
@@ -440,16 +460,9 @@
     /**
      * Instala una única vez las variables CSS propias del userscript.
      */
-    function applyProtectionStyles() {
-      try {
-        VisualStabilizationService.injectStabilizationStyles();
-      } catch (e) { }
-    }
-
     return {
       detectNativeBrowserEngine,
-      isDocumentInFullscreenMode,
-      applyProtectionStyles
+      isDocumentInFullscreenMode
     };
   })();
 
@@ -465,9 +478,12 @@
     let isForcedApplicationPending = false;
     let animationFrameRequestId = null;
     let styleMutationObserver = null;
-    let isScriptApplyingZoomMutation = false;
     let lastAppliedZoomScaleString = null;
     let lastAppliedScaleValue = 1.0;
+    let lastViewportWidth = -1;
+    let lastScreenWidth = -1;
+    let lastConfigurationSnapshot = null;
+    let lastFullscreenState = false;
     let originalInlineZoom = null;
     let originalInlineZoomPriority = '';
 
@@ -497,40 +513,53 @@
         if (!rootElement) return;
 
         const config = ConfigurationService.getSanitizedConfig();
+        const currentViewportWidthPx = getValidViewportWidth();
+        if (!currentViewportWidthPx) return;
+        const monitorWidth = ViewportMetricsService.getScreenWidth() || currentViewportWidthPx;
+        const isFullscreen = BrowserEnvironmentService.isDocumentInFullscreenMode();
 
-        if (config.isResetInFullscreenEnabled && MediaProtectionService.isDocumentInFullscreenMode()) {
-          if (forceApplication || lastAppliedZoomScaleString !== '1.0000' || parseFloat(rootElement.style.zoom) !== 1) {
-            isScriptApplyingZoomMutation = true;
-            try {
-              VisualStabilizationService.updateGlobalCssVariables(rootElement, 1.0, window.innerWidth || 1920, false, 1920);
-              rootElement.style.setProperty('zoom', '1.0', 'important');
-              lastAppliedZoomScaleString = '1.0000';
-              lastAppliedScaleValue = 1.0;
-            } finally {
-              isScriptApplyingZoomMutation = false;
+        if (!forceApplication &&
+            currentViewportWidthPx === lastViewportWidth &&
+            monitorWidth === lastScreenWidth &&
+            config === lastConfigurationSnapshot &&
+            isFullscreen === lastFullscreenState) {
+          return;
+        }
+
+        lastViewportWidth = currentViewportWidthPx;
+        lastScreenWidth = monitorWidth;
+        lastConfigurationSnapshot = config;
+        lastFullscreenState = isFullscreen;
+
+        if (config.isResetInFullscreenEnabled && isFullscreen) {
+          const fullscreenScaleValue = 1;
+          const fullscreenScaleString = PointerPrecisionService.formatScale(fullscreenScaleValue);
+          if (forceApplication || lastAppliedZoomScaleString !== fullscreenScaleString || !PointerPrecisionService.isScaleSynchronized(rootElement, fullscreenScaleValue)) {
+            if (PointerPrecisionService.applyNativeScale(rootElement, fullscreenScaleValue, fullscreenScaleString)) {
+              lastAppliedZoomScaleString = fullscreenScaleString;
+              lastAppliedScaleValue = fullscreenScaleValue;
             }
           }
           return;
         }
 
-        const currentViewportWidthPx = getValidViewportWidth();
-        if (!currentViewportWidthPx) return;
-
-        const monitorWidth = ViewportMetricsService.getScreenWidth() || currentViewportWidthPx;
         const viewportToScreenRatio = currentViewportWidthPx / monitorWidth;
         const isSplitView = viewportToScreenRatio < 0.90;
-        const effectiveMin = config.minimumZoomScaleLimit;
-        const effectiveMax = config.maximumZoomScaleLimit;
-        const automaticReferenceWidth = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
+        const automaticReferenceWidth = ViewportMetricsService.calculateReferenceBaseWidth(
+          currentViewportWidthPx,
+          config.referenceBaseWidthSetting,
+          monitorWidth
+        );
         const referenceBaseWidthPx = (!config.isSplitViewAdaptationEnabled && isSplitView && config.referenceBaseWidthSetting === 'auto')
           ? currentViewportWidthPx
           : automaticReferenceWidth;
-        const lockedZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, effectiveMin, effectiveMax);
-        const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
-        const currentInlineZoom = parseFloat(rootElement.style.zoom);
-        const zoomWasOverwritten = !Number.isFinite(currentInlineZoom) || Math.abs(currentInlineZoom - lockedZoomScaleFactor) >= HYSTERESIS_THRESHOLD;
+        const computedZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, config);
+        const normalizedZoomScaleFactor = PointerPrecisionService.normalizeScale(computedZoomScaleFactor);
+        const zoomScaleString = PointerPrecisionService.formatScale(normalizedZoomScaleFactor);
+        const expectedCurrentScaleFactor = lastAppliedZoomScaleString === null ? normalizedZoomScaleFactor : lastAppliedScaleValue;
+        const zoomWasOverwritten = !PointerPrecisionService.isScaleSynchronized(rootElement, expectedCurrentScaleFactor);
 
-        if (!forceApplication && !zoomWasOverwritten && lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
+        if (!forceApplication && !zoomWasOverwritten && lastAppliedZoomScaleString !== null && Math.abs(normalizedZoomScaleFactor - lastAppliedScaleValue) < SCALE_UPDATE_HYSTERESIS) {
           return;
         }
 
@@ -538,21 +567,9 @@
           return;
         }
 
-        isScriptApplyingZoomMutation = true;
-        try {
-          VisualStabilizationService.updateGlobalCssVariables(
-            rootElement,
-            lockedZoomScaleFactor,
-            currentViewportWidthPx,
-            isSplitView,
-            referenceBaseWidthPx
-          );
-
-          rootElement.style.setProperty('zoom', zoomScaleString, 'important');
+        if (PointerPrecisionService.applyNativeScale(rootElement, normalizedZoomScaleFactor, zoomScaleString)) {
           lastAppliedZoomScaleString = zoomScaleString;
-          lastAppliedScaleValue = lockedZoomScaleFactor;
-        } finally {
-          isScriptApplyingZoomMutation = false;
+          lastAppliedScaleValue = normalizedZoomScaleFactor;
         }
       } catch (e) { }
     }
@@ -583,15 +600,8 @@
         if (!rootElement || styleMutationObserver) return;
 
         styleMutationObserver = new MutationObserver((mutations) => {
-          if (isScriptApplyingZoomMutation) return;
-          for (let i = 0; i < mutations.length; i++) {
-            if (mutations[i].attributeName === 'style') {
-              const currentZoom = parseFloat(rootElement.style.zoom);
-              if (lastAppliedZoomScaleString !== null && (!Number.isFinite(currentZoom) || Math.abs(currentZoom - lastAppliedScaleValue) >= HYSTERESIS_THRESHOLD)) {
-                scheduleFrameExecution(true);
-              }
-              break;
-            }
+          if (mutations.length > 0 && lastAppliedZoomScaleString !== null && !PointerPrecisionService.isScaleSynchronized(rootElement, lastAppliedScaleValue)) {
+            scheduleFrameExecution(true);
           }
         });
 
@@ -616,13 +626,14 @@
       }
       isAnimationFrameScheduled = false;
       isForcedApplicationPending = false;
+      lastViewportWidth = -1;
+      lastScreenWidth = -1;
+      lastConfigurationSnapshot = null;
       const rootElement = document.documentElement;
       if (rootElement && lastAppliedZoomScaleString !== null) {
         if (originalInlineZoom === '') rootElement.style.removeProperty('zoom');
         else rootElement.style.setProperty('zoom', originalInlineZoom, originalInlineZoomPriority);
-        for (const propertyName of Array.from(rootElement.style)) {
-          if (propertyName.startsWith('--auto-shrink-')) rootElement.style.removeProperty(propertyName);
-        }
+        rootElement.style.removeProperty('--auto-shrink-scale');
       }
     }
 
@@ -835,10 +846,10 @@
         injectModalStyles();
 
         const config = ConfigurationService.getSanitizedConfig();
-        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
+        const monitorWidth = ViewportMetricsService.getScreenWidth() || 1920;
         const currentViewportWidthPx = window.innerWidth || monitorWidth;
-        const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) <= 0.78;
-        const engine = MediaProtectionService.detectNativeBrowserEngine();
+        const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) < 0.90;
+        const engine = BrowserEnvironmentService.detectNativeBrowserEngine();
 
         const overlayElement = document.createElement('div');
         overlayElement.id = CONFIGURATION_MODAL_OVERLAY_ID;
@@ -850,7 +861,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.0.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.2.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -976,8 +987,7 @@
 
         const handleReset = () => {
           ConfigurationService.resetAll();
-          MediaProtectionService.applyProtectionStyles();
-          ZoomExecutionEngine.applyViewportZoomScale();
+          ZoomExecutionEngine.applyViewportZoomScale(true);
           destroyModal(overlayElement, listenerBindings);
         };
 
@@ -1007,19 +1017,20 @@
           const isFullscreen = overlayElement.querySelector('#as-checkbox-reset-fullscreen').checked;
           const isSplitView = overlayElement.querySelector('#as-checkbox-split-view').checked;
 
-          ConfigurationService.set('scalingMode', modeVal);
-          ConfigurationService.set('referenceBaseWidthSetting', baseVal);
-          ConfigurationService.set('minimumZoomScaleLimit', minZoom / 100);
-          ConfigurationService.set('maximumZoomScaleLimit', maxZoom / 100);
-          ConfigurationService.set('thresholdZoomLevelUnder80Percent', s80);
-          ConfigurationService.set('thresholdZoomLevelUnder60Percent', s60);
-          ConfigurationService.set('thresholdZoomLevelUnder40Percent', s40);
-          ConfigurationService.set('thresholdZoomLevelUnder20Percent', s20);
-          ConfigurationService.set('isResetInFullscreenEnabled', isFullscreen);
-          ConfigurationService.set('isSplitViewAdaptationEnabled', isSplitView);
+          ConfigurationService.setMany({
+            scalingMode: modeVal,
+            referenceBaseWidthSetting: baseVal,
+            minimumZoomScaleLimit: minZoom / 100,
+            maximumZoomScaleLimit: maxZoom / 100,
+            thresholdZoomLevelUnder80Percent: s80,
+            thresholdZoomLevelUnder60Percent: s60,
+            thresholdZoomLevelUnder40Percent: s40,
+            thresholdZoomLevelUnder20Percent: s20,
+            isResetInFullscreenEnabled: isFullscreen,
+            isSplitViewAdaptationEnabled: isSplitView
+          });
 
-          MediaProtectionService.applyProtectionStyles();
-          ZoomExecutionEngine.applyViewportZoomScale();
+          ZoomExecutionEngine.applyViewportZoomScale(true);
           destroyModal(overlayElement, listenerBindings);
         };
 
@@ -1046,11 +1057,10 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.0', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.2', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
-            MediaProtectionService.applyProtectionStyles();
-            ZoomExecutionEngine.applyViewportZoomScale();
+            ZoomExecutionEngine.applyViewportZoomScale(true);
           });
           GM_registerMenuCommand('🌐 Ver Repositorio en GitHub', () => {
             window.open('https://github.com/Baalgarthem/auto-shrink', '_blank');
@@ -1077,10 +1087,6 @@
 
     ZoomExecutionEngine.rememberOriginalStyle();
     try {
-      MediaProtectionService.applyProtectionStyles();
-    } catch (e) { }
-
-    try {
       ZoomExecutionEngine.applyViewportZoomScale();
     } catch (e) { }
 
@@ -1099,22 +1105,30 @@
     try {
       ZoomExecutionEngine.destroy();
       ConfigurationService.destroy();
-      window.removeEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution);
-      window.removeEventListener('orientationchange', ZoomExecutionEngine.scheduleFrameExecution);
+      window.removeEventListener('resize', handleViewportResize);
+      window.removeEventListener('orientationchange', handleEnvironmentChange);
       window.removeEventListener('pageshow', handlePageShow);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      document.removeEventListener('fullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
-      document.removeEventListener('webkitfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
-      document.removeEventListener('mozfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
-      if (window.visualViewport) window.visualViewport.removeEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution);
+      document.removeEventListener('fullscreenchange', handleEnvironmentChange);
+      document.removeEventListener('webkitfullscreenchange', handleEnvironmentChange);
+      document.removeEventListener('mozfullscreenchange', handleEnvironmentChange);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', handleViewportResize);
       if (window.screen && window.screen.orientation) {
-        window.screen.orientation.removeEventListener('change', ZoomExecutionEngine.scheduleFrameExecution);
+        window.screen.orientation.removeEventListener('change', handleEnvironmentChange);
       }
     } catch (e) { }
   }
 
   function handleVisibilityChange() {
     if (!document.hidden) ZoomExecutionEngine.scheduleFrameExecution(true);
+  }
+
+  function handleViewportResize() {
+    ZoomExecutionEngine.scheduleFrameExecution(false);
+  }
+
+  function handleEnvironmentChange() {
+    ZoomExecutionEngine.scheduleFrameExecution(true);
   }
 
   function handlePageShow() {
@@ -1136,21 +1150,21 @@
     initializeEngine();
   }
 
-  window.addEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  window.addEventListener('resize', handleViewportResize, { passive: true });
   window.addEventListener('pageshow', handlePageShow, { passive: true });
   if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+    window.visualViewport.addEventListener('resize', handleViewportResize, { passive: true });
   }
   if (window.screen && window.screen.orientation) {
-    window.screen.orientation.addEventListener('change', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+    window.screen.orientation.addEventListener('change', handleEnvironmentChange, { passive: true });
   }
-  window.addEventListener('orientationchange', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  window.addEventListener('orientationchange', handleEnvironmentChange, { passive: true });
 
   document.addEventListener('visibilitychange', handleVisibilityChange, { passive: true });
 
-  document.addEventListener('fullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
-  document.addEventListener('webkitfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
-  document.addEventListener('mozfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
+  document.addEventListener('fullscreenchange', handleEnvironmentChange, { passive: true });
+  document.addEventListener('webkitfullscreenchange', handleEnvironmentChange, { passive: true });
+  document.addEventListener('mozfullscreenchange', handleEnvironmentChange, { passive: true });
 
   window.addEventListener('pagehide', handlePageHide, { once: true });
   window.addEventListener('beforeunload', destroyEngineLifecycle, { once: true });
