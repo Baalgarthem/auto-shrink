@@ -2,7 +2,7 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.3.0
+// @version      5.4.0
 // @description  Ajusta automáticamente el zoom al ancho disponible y corrige las coordenadas del puntero en controles multimedia escalados.
 // @author       Baalgarthem
 // @match        *://*/*
@@ -19,7 +19,7 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v5.3.0 - Escalado automático y corrección multimedia del puntero
+ * Auto-Shrink Userscript v5.4.0 - Escalado automático y alineación multimedia completa
  * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
  * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
@@ -368,6 +368,26 @@
       '[data-testid*="video-player"]'
     ].join(',');
     const MEDIA_CONTROL_SELECTOR = '[class*="seek"], [class*="progress"], [class*="timeline"], [role="slider"]';
+    const MEDIA_PLAYER_CONTAINER_SELECTOR = [
+      '.html5-video-player', '.video-js', '.vjs-player', '.jwplayer', '.plyr',
+      '.mejs__container', '.shaka-video-container', '[class*="video-player"]',
+      '[class*="videoPlayer"]', '[class*="media-player"]', '[class*="mediaPlayer"]',
+      '[class*="watch-video"]', '[data-video-player]', '[data-testid*="video-player"]'
+    ].join(',');
+    const MEDIA_TOOLTIP_SELECTOR = [
+      '.ytp-tooltip', '.vjs-mouse-display', '.vjs-time-tooltip',
+      '.jw-slider-time .jw-tooltip', '.jw-tooltip-time', '.plyr__tooltip',
+      '.mejs__time-float', '.shaka-current-time',
+      '[class*="time-tooltip" i]', '[class*="seek-tooltip" i]',
+      '[class*="progress-tooltip" i]', '[class*="preview-time" i]',
+      '[class*="tooltip" i]'
+    ].join(',');
+    const MEDIA_PORTAL_TOOLTIP_SELECTOR = [
+      '.ytp-tooltip', '.vjs-mouse-display', '.vjs-time-tooltip',
+      '.jw-tooltip-time', '.plyr__tooltip', '.mejs__time-float',
+      '[class*="time-tooltip" i]', '[class*="seek-tooltip" i]',
+      '[class*="progress-tooltip" i]', '[class*="preview-time" i]'
+    ].join(',');
 
     let isNativeZoomSupportedCache = null;
     let hasLoggedUnsupportedZoom = false;
@@ -376,6 +396,13 @@
     let activeScaleFactor = 1;
     let mediaTargetCache = new WeakMap();
     let correctionModeCache = new WeakMap();
+    let tooltipAlignmentStateCache = new WeakMap();
+    let mediaTooltipCandidateCache = new WeakMap();
+    let modifiedMediaTooltips = new Set();
+    let tooltipAlignmentFrameRequestId = null;
+    let pendingTooltipPointerX = 0;
+    let pendingTooltipPointerY = 0;
+    let pendingTooltipPlayerRoot = null;
     let definePageEventProperty = Object.defineProperty;
 
     try {
@@ -437,11 +464,31 @@
         rootElement.style.setProperty('zoom', zoomScaleString, 'important');
       }
       activeScaleFactor = normalizedScaleFactor;
+      if (Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) {
+        restoreModifiedMediaTooltipAlignment();
+      }
       return true;
     }
 
     function setMediaPointerPrecisionEnabled(isEnabled) {
       isMediaPointerPrecisionEnabled = !!isEnabled;
+      if (!isMediaPointerPrecisionEnabled) restoreModifiedMediaTooltipAlignment();
+    }
+
+    function restoreModifiedMediaTooltipAlignment() {
+      for (const tooltipElement of modifiedMediaTooltips) {
+        const alignmentState = tooltipAlignmentStateCache.get(tooltipElement);
+        if (!alignmentState || !tooltipElement.style) continue;
+        if (alignmentState.originalInlineTranslate === '') tooltipElement.style.removeProperty('translate');
+        else tooltipElement.style.setProperty(
+          'translate',
+          alignmentState.originalInlineTranslate,
+          alignmentState.originalInlineTranslatePriority
+        );
+      }
+      tooltipAlignmentStateCache = new WeakMap();
+      mediaTooltipCandidateCache = new WeakMap();
+      modifiedMediaTooltips = new Set();
     }
 
     function isMediaInteractionTarget(targetElement) {
@@ -513,16 +560,161 @@
       } catch (e) { }
     }
 
+    function findMediaPlayerRoot(targetElement) {
+      try {
+        const knownContainer = targetElement.closest(MEDIA_PLAYER_CONTAINER_SELECTOR);
+        if (knownContainer) return knownContainer;
+
+        const nativeMediaElement = targetElement.closest('video, audio');
+        if (nativeMediaElement) return nativeMediaElement.parentElement || nativeMediaElement;
+
+        let ancestor = targetElement;
+        for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
+          if (ancestor.querySelector && ancestor.querySelector('video, audio')) return ancestor;
+        }
+      } catch (e) { }
+      return null;
+    }
+
+    function isVisibleTimeTooltip(candidateElement, playerRect) {
+      try {
+        const rect = candidateElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (rect.bottom < playerRect.top - 240 || rect.top > playerRect.bottom + 240) return false;
+
+        const computedStyle = getComputedStyle(candidateElement);
+        if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden' || parseFloat(computedStyle.opacity) === 0) return false;
+
+        const text = candidateElement.textContent || '';
+        return /\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b/.test(text);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function findBestMediaTooltip(playerRoot, playerRect) {
+      const cachedCandidate = mediaTooltipCandidateCache.get(playerRoot);
+      if (cachedCandidate && cachedCandidate.isConnected && isVisibleTimeTooltip(cachedCandidate, playerRect)) {
+        return cachedCandidate;
+      }
+
+      let bestCandidate = null;
+      let bestScore = Infinity;
+      let localCandidates = [];
+      try {
+        localCandidates = playerRoot.querySelectorAll(MEDIA_TOOLTIP_SELECTOR);
+      } catch (e) { }
+
+      for (const candidate of localCandidates) {
+        if (!isVisibleTimeTooltip(candidate, playerRect)) continue;
+        const rect = candidate.getBoundingClientRect();
+        const verticalDistance = Math.abs((rect.top + rect.bottom) / 2 - pendingTooltipPointerY);
+        const isKnownPositioningContainer = candidate.matches(
+          '.ytp-tooltip, .vjs-mouse-display, .jw-tooltip, .plyr__tooltip, .mejs__time-float, .shaka-current-time'
+        );
+        const score = verticalDistance + (isKnownPositioningContainer ? 0 : 100);
+        if (score < bestScore) {
+          bestScore = score;
+          bestCandidate = candidate;
+        }
+      }
+
+      if (!bestCandidate) {
+        let portalCandidates = [];
+        try {
+          portalCandidates = document.querySelectorAll(MEDIA_PORTAL_TOOLTIP_SELECTOR);
+        } catch (e) { }
+        for (const candidate of portalCandidates) {
+          if (!isVisibleTimeTooltip(candidate, playerRect)) continue;
+          const rect = candidate.getBoundingClientRect();
+          const score = Math.abs((rect.top + rect.bottom) / 2 - pendingTooltipPointerY);
+          if (score < bestScore) {
+            bestScore = score;
+            bestCandidate = candidate;
+          }
+        }
+      }
+
+      if (bestCandidate) mediaTooltipCandidateCache.set(playerRoot, bestCandidate);
+      return bestCandidate;
+    }
+
+    function alignPendingMediaTooltip() {
+      tooltipAlignmentFrameRequestId = null;
+      const playerRoot = pendingTooltipPlayerRoot;
+      if (!playerRoot || !playerRoot.isConnected || Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) return;
+
+      try {
+        const playerRect = playerRoot.getBoundingClientRect();
+        const tooltipElement = findBestMediaTooltip(playerRoot, playerRect);
+        if (!tooltipElement) return;
+
+        let alignmentState = tooltipAlignmentStateCache.get(tooltipElement);
+        const currentInlineTranslate = tooltipElement.style.getPropertyValue('translate');
+        if (!alignmentState) {
+          const computedTranslate = getComputedStyle(tooltipElement).translate;
+          if (computedTranslate && computedTranslate !== 'none' && computedTranslate !== '0px') return;
+          alignmentState = {
+            originalInlineTranslate: currentInlineTranslate,
+            originalInlineTranslatePriority: tooltipElement.style.getPropertyPriority('translate'),
+            appliedInlineTranslate: '',
+            logicalOffsetX: 0
+          };
+          tooltipAlignmentStateCache.set(tooltipElement, alignmentState);
+          modifiedMediaTooltips.add(tooltipElement);
+        } else if (alignmentState.appliedInlineTranslate && currentInlineTranslate !== alignmentState.appliedInlineTranslate) {
+          alignmentState.originalInlineTranslate = currentInlineTranslate;
+          alignmentState.originalInlineTranslatePriority = tooltipElement.style.getPropertyPriority('translate');
+          alignmentState.appliedInlineTranslate = '';
+          alignmentState.logicalOffsetX = 0;
+        }
+
+        const tooltipRect = tooltipElement.getBoundingClientRect();
+        const currentCenterX = (tooltipRect.left + tooltipRect.right) / 2;
+        const baseCenterX = currentCenterX - alignmentState.logicalOffsetX * activeScaleFactor;
+        const halfTooltipWidth = tooltipRect.width / 2;
+        const minimumCenterX = playerRect.left + halfTooltipWidth;
+        const maximumCenterX = playerRect.right - halfTooltipWidth;
+        const desiredCenterX = Math.max(minimumCenterX, Math.min(maximumCenterX, pendingTooltipPointerX));
+        const requiredLogicalOffsetX = (desiredCenterX - baseCenterX) / activeScaleFactor;
+
+        if (Math.abs(requiredLogicalOffsetX - alignmentState.logicalOffsetX) < 0.1) return;
+        const translateValue = requiredLogicalOffsetX.toFixed(3) + 'px 0px';
+        tooltipElement.style.setProperty('translate', translateValue, 'important');
+        alignmentState.appliedInlineTranslate = tooltipElement.style.getPropertyValue('translate');
+        alignmentState.logicalOffsetX = requiredLogicalOffsetX;
+      } catch (e) { }
+    }
+
+    function scheduleMediaTooltipAlignment(pointerEvent, targetElement) {
+      if (pointerEvent.type !== 'pointermove' && pointerEvent.type !== 'mousemove' &&
+          pointerEvent.type !== 'pointerover' && pointerEvent.type !== 'mouseover' &&
+          pointerEvent.type !== 'pointerdown' && pointerEvent.type !== 'mousedown') return;
+      const playerRoot = findMediaPlayerRoot(targetElement);
+      if (!playerRoot) return;
+
+      pendingTooltipPointerX = pointerEvent.clientX;
+      pendingTooltipPointerY = pointerEvent.clientY;
+      pendingTooltipPlayerRoot = playerRoot;
+      if (tooltipAlignmentFrameRequestId === null) {
+        tooltipAlignmentFrameRequestId = requestAnimationFrame(alignPendingMediaTooltip);
+      }
+    }
+
     function correctMediaPointerEvent(pointerEvent) {
       if (!isMediaPointerPrecisionEnabled || Math.abs(activeScaleFactor - 1) <= SCALE_SYNCHRONIZATION_EPSILON) return;
       const targetElement = pointerEvent.target;
-      if (!isMediaInteractionTarget(targetElement) || !detectOffsetCorrectionMode(targetElement, pointerEvent)) return;
+      if (!isMediaInteractionTarget(targetElement)) return;
 
-      const inverseScaleFactor = 1 / activeScaleFactor;
-      defineCorrectedEventCoordinate(pointerEvent, 'offsetX', pointerEvent.offsetX * inverseScaleFactor);
-      defineCorrectedEventCoordinate(pointerEvent, 'offsetY', pointerEvent.offsetY * inverseScaleFactor);
-      defineCorrectedEventCoordinate(pointerEvent, 'movementX', pointerEvent.movementX * inverseScaleFactor);
-      defineCorrectedEventCoordinate(pointerEvent, 'movementY', pointerEvent.movementY * inverseScaleFactor);
+      if (detectOffsetCorrectionMode(targetElement, pointerEvent)) {
+        const inverseScaleFactor = 1 / activeScaleFactor;
+        defineCorrectedEventCoordinate(pointerEvent, 'offsetX', pointerEvent.offsetX * inverseScaleFactor);
+        defineCorrectedEventCoordinate(pointerEvent, 'offsetY', pointerEvent.offsetY * inverseScaleFactor);
+        defineCorrectedEventCoordinate(pointerEvent, 'movementX', pointerEvent.movementX * inverseScaleFactor);
+        defineCorrectedEventCoordinate(pointerEvent, 'movementY', pointerEvent.movementY * inverseScaleFactor);
+      }
+
+      scheduleMediaTooltipAlignment(pointerEvent, targetElement);
     }
 
     function initializePointerCorrection() {
@@ -534,6 +726,10 @@
     }
 
     function destroy() {
+      if (tooltipAlignmentFrameRequestId !== null) {
+        cancelAnimationFrame(tooltipAlignmentFrameRequestId);
+        tooltipAlignmentFrameRequestId = null;
+      }
       if (isPointerCorrectionInitialized) {
         for (const eventType of MEDIA_POINTER_EVENT_TYPES) {
           window.removeEventListener(eventType, correctMediaPointerEvent, true);
@@ -541,8 +737,10 @@
       }
       isPointerCorrectionInitialized = false;
       activeScaleFactor = 1;
+      restoreModifiedMediaTooltipAlignment();
       mediaTargetCache = new WeakMap();
       correctionModeCache = new WeakMap();
+      pendingTooltipPlayerRoot = null;
     }
 
     return {
@@ -1000,7 +1198,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.3.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.4.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -1024,7 +1222,7 @@
                 </label>
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-media-pointer" ${config.isMediaPointerPrecisionEnabled ? 'checked' : ''}>
-                  🎯 Corregir coordenadas del cursor en líneas de tiempo multimedia
+                  🎯 Alinear cursor y etiquetas de tiempo en controles multimedia
                 </label>
               </div>
             </div>
@@ -1202,7 +1400,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.3', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.4', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             ZoomExecutionEngine.applyViewportZoomScale(true);
