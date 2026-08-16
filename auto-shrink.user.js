@@ -2,8 +2,8 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.5.1
-// @description  Ajusta automáticamente el zoom al ancho disponible y corrige las coordenadas del puntero en controles multimedia escalados.
+// @version      5.6.0
+// @description  Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo (XVideos, Pornhub, YouTube, etc.).
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -16,18 +16,19 @@
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @run-at       document-start
-// ==/UserScript==
+// ==UserScript==
 
 /**
- * Auto-Shrink Userscript v5.5.1 - Escalado automático y coordenadas adaptativas de hover
+ * Auto-Shrink Userscript v5.6.0 - Escalado automático, scroll sincronizado y precisión multimedia
  * ------------------------------------------------------------------------------------------
- * Estructura dividida en 6 servicios modulares especializados:
+ * Estructura dividida en 7 servicios modulares especializados:
  * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
  * 2. ViewportMetricsService: Medición del viewport y cálculo proporcional de la escala.
- * 3. PointerPrecisionService: Escala nativa única para pintura, hit-testing y estado interno.
- * 4. BrowserEnvironmentService: Detección del motor y del estado de pantalla completa.
- * 5. ZoomExecutionEngine: Aplicación idempotente, histéresis y agrupación mediante rAF.
- * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
+ * 3. PointerPrecisionService: Escala nativa única para pintura, hit-testing y etiquetas de tiempo.
+ * 4. ScrollSynchronizationService: Sincronización de desplazamientos lógicos y visuales (scrollTop/scrollLeft).
+ * 5. BrowserEnvironmentService: Detección del motor y del estado de pantalla completa.
+ * 6. ZoomExecutionEngine: Aplicación idempotente, histéresis y agrupación mediante rAF.
+ * 7. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
   'use strict';
@@ -362,37 +363,56 @@
     const MEDIA_PLAYER_SELECTOR = [
       'video', 'audio', '.html5-video-player', '.video-js', '.vjs-player',
       '.jwplayer', '.plyr', '.mejs__container', '.shaka-video-container',
+      '#html5_video_wrapper', '#video-player-bg', '#xv-player', '.video-bg-pic',
+      '#player', '#main-container', '.player-container', '.video-wrapper',
+      '.mgp_container', '.mhp1', '[id*="player" i]', '[class*="player" i]',
       '[class*="video-player"]', '[class*="videoPlayer"]',
       '[class*="media-player"]', '[class*="mediaPlayer"]',
-      '[class*="watch-video"]', '[data-video-player]',
+      '[class*="watch-video"]', '[data-video-player]', '[data-player-id]',
       '[data-testid*="video-player"]'
     ].join(',');
-    const MEDIA_CONTROL_SELECTOR = '[class*="seek"], [class*="progress"], [class*="timeline"], [role="slider"]';
+    const MEDIA_CONTROL_SELECTOR = [
+      '[class*="seek" i]', '[class*="progress" i]', '[class*="timeline" i]',
+      '[class*="seekBar" i]', '[class*="progressBar" i]', '[class*="slider" i]',
+      '.mgp_seekBar', '.mgp_progressBar', '.mhp1_seekBar', '.mhp1_progressBar',
+      '.noUi-target', '.noUi-base', '[role="slider"]'
+    ].join(',');
     const MEDIA_TIMELINE_SELECTOR = [
       '.ytp-progress-bar-container', '.vjs-progress-holder', '.jw-slider-time',
       '.plyr__progress', '.mejs__time-rail', '.shaka-seek-bar-container',
-      '[class*="seek-bar" i]', '[class*="seekbar" i]',
-      '[class*="progress-bar" i]', '[class*="timeline" i]', '[role="slider"]'
+      '.mgp_seekBar', '.mgp_progressBar', '.mhp1_seekBar', '.mhp1_progressBar',
+      '.noUi-target', '.noUi-base', '.progress-bar',
+      '[class*="seek-bar" i]', '[class*="seekbar" i]', '[class*="seekBar" i]',
+      '[class*="progress-bar" i]', '[class*="progressBar" i]',
+      '[class*="timeline" i]', '[class*="slider" i]', '[role="slider"]'
     ].join(',');
     const MEDIA_PLAYER_CONTAINER_SELECTOR = [
       '.html5-video-player', '.video-js', '.vjs-player', '.jwplayer', '.plyr',
-      '.mejs__container', '.shaka-video-container', '[class*="video-player"]',
-      '[class*="videoPlayer"]', '[class*="media-player"]', '[class*="mediaPlayer"]',
+      '.mejs__container', '.shaka-video-container',
+      '#html5_video_wrapper', '#video-player-bg', '#xv-player',
+      '#player', '#main-container', '.player-container', '.video-wrapper',
+      '.mgp_container', '.mhp1', '[id*="player" i]', '[class*="player" i]',
+      '[class*="video-player"]', '[class*="videoPlayer"]',
+      '[class*="media-player"]', '[class*="mediaPlayer"]',
       '[class*="watch-video"]', '[data-video-player]', '[data-testid*="video-player"]'
     ].join(',');
     const MEDIA_TOOLTIP_SELECTOR = [
       '.ytp-tooltip', '.vjs-mouse-display', '.vjs-time-tooltip',
       '.jw-slider-time .jw-tooltip', '.jw-tooltip-time', '.plyr__tooltip',
       '.mejs__time-float', '.shaka-current-time',
+      '.mgp_tooltip', '.mgp_preview', '.mhp1_tooltip', '.mhp1_preview',
+      '.noUi-tooltip', '.time-tooltip', '.video-pic', '.thumb',
+      '.duration', '.time', '.timestamp', '.time-tag',
       '[class*="time-tooltip" i]', '[class*="seek-tooltip" i]',
       '[class*="progress-tooltip" i]', '[class*="preview-time" i]',
-      '[class*="tooltip" i]'
+      '[class*="tooltip" i]', '[class*="duration" i]', '[class*="time-tag" i]'
     ].join(',');
     const MEDIA_PORTAL_TOOLTIP_SELECTOR = [
       '.ytp-tooltip', '.vjs-mouse-display', '.vjs-time-tooltip',
       '.jw-tooltip-time', '.plyr__tooltip', '.mejs__time-float',
-      '[class*="time-tooltip" i]', '[class*="seek-tooltip" i]',
-      '[class*="progress-tooltip" i]', '[class*="preview-time" i]'
+      '.mgp_tooltip', '.mgp_preview', '.mhp1_tooltip', '.mhp1_preview',
+      '.noUi-tooltip', '[class*="time-tooltip" i]', '[class*="seek-tooltip" i]',
+      '[class*="progress-tooltip" i]', '[class*="preview-time" i]', '[class*="tooltip" i]'
     ].join(',');
 
     let isNativeZoomSupportedCache = null;
@@ -845,7 +865,81 @@
   })();
 
   // ============================================================================
-  // 4. SERVICIO DE ENTORNO Y PANTALLA COMPLETA (BrowserEnvironmentService)
+  // 4. SERVICIO DE SINCRONIZACIÓN DE SCROLL LÓGICO Y VISUAL (ScrollSynchronizationService)
+  // ============================================================================
+
+  /**
+   * Servicio dedicado a sincronizar las métricas de desplazamiento (scrollTop, scrollLeft)
+   * entre el viewport visual y la disposición lógica del documento cuando se aplica CSS zoom.
+   */
+  const ScrollSynchronizationService = (function () {
+    let isInitialized = false;
+    let frameRequestId = null;
+    let lastScrollY = -1;
+    let lastScrollX = -1;
+
+    function synchronizeScrollMetrics() {
+      frameRequestId = null;
+      if (document.hidden) return;
+
+      try {
+        const rootElement = document.documentElement;
+        if (!rootElement) return;
+
+        const currentScrollY = window.scrollY || rootElement.scrollTop || 0;
+        const currentScrollX = window.scrollX || rootElement.scrollLeft || 0;
+
+        if (Math.abs(currentScrollY - lastScrollY) < 0.5 && Math.abs(currentScrollX - lastScrollX) < 0.5) {
+          return;
+        }
+
+        lastScrollY = currentScrollY;
+        lastScrollX = currentScrollX;
+
+        const scale = PointerPrecisionService.readInlineScale(rootElement) || 1;
+        const visualScrollY = Math.round(currentScrollY / scale);
+        const visualScrollX = Math.round(currentScrollX / scale);
+
+        rootElement.style.setProperty('--auto-shrink-scroll-top', `${currentScrollY}px`);
+        rootElement.style.setProperty('--auto-shrink-scroll-left', `${currentScrollX}px`);
+        rootElement.style.setProperty('--auto-shrink-visual-scroll-top', `${visualScrollY}px`);
+        rootElement.style.setProperty('--auto-shrink-visual-scroll-left', `${visualScrollX}px`);
+        rootElement.style.setProperty('--auto-shrink-effective-scale', String(scale));
+      } catch (e) { }
+    }
+
+    function onScrollHandler() {
+      if (frameRequestId === null) {
+        frameRequestId = requestAnimationFrame(synchronizeScrollMetrics);
+      }
+    }
+
+    function initialize() {
+      if (isInitialized) return;
+      isInitialized = true;
+      window.addEventListener('scroll', onScrollHandler, { capture: true, passive: true });
+      synchronizeScrollMetrics();
+    }
+
+    function destroy() {
+      if (!isInitialized) return;
+      isInitialized = false;
+      if (frameRequestId !== null) {
+        cancelAnimationFrame(frameRequestId);
+        frameRequestId = null;
+      }
+      window.removeEventListener('scroll', onScrollHandler, true);
+    }
+
+    return {
+      initialize,
+      synchronizeScrollMetrics,
+      destroy
+    };
+  })();
+
+  // ============================================================================
+  // 5. SERVICIO DE ENTORNO Y PANTALLA COMPLETA (BrowserEnvironmentService)
   // ============================================================================
 
   /**
@@ -1489,7 +1583,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.5.1', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.6.0', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             ZoomExecutionEngine.applyViewportZoomScale(true);
@@ -1520,6 +1614,9 @@
     ZoomExecutionEngine.rememberOriginalStyle();
     PointerPrecisionService.initializePointerCorrection();
     try {
+      ScrollSynchronizationService.initialize();
+    } catch (e) { }
+    try {
       ZoomExecutionEngine.applyViewportZoomScale();
     } catch (e) { }
 
@@ -1538,6 +1635,7 @@
     try {
       ZoomExecutionEngine.destroy();
       PointerPrecisionService.destroy();
+      ScrollSynchronizationService.destroy();
       ConfigurationService.destroy();
       window.removeEventListener('resize', handleViewportResize);
       window.removeEventListener('orientationchange', handleEnvironmentChange);
