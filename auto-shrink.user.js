@@ -2,8 +2,8 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      4.0.1
-// @description  Reducción dinámica del tamaño de página ultra-optimizada a 60/120fps con aceleración GPU, cero asignaciones de memoria en bucle caliente, protección anti-layout-shift y sincronización entre pestañas.
+// @version      5.0.0
+// @description  Ajusta automáticamente el zoom de cada página al ancho disponible para evitar correcciones manuales al redimensionar o usar vista dividida.
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -11,20 +11,21 @@
 // @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        GM_registerMenuCommand
-// @grant        GM_addStyle
 // @run-at       document-start
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v4.0.0 - Motor de Escalado e Integración Responsiva Ultra-Optimizado
+ * Auto-Shrink Userscript v5.0.0 - Escalado automático estable y no invasivo
  * ------------------------------------------------------------------------------------------
  * Estructura dividida en 6 servicios modulares especializados:
- * 1. ConfigurationService: Caché inmutable sin asignaciones, sincronización entre pestañas y saneamiento.
- * 2. ViewportMetricsService: Métricas del viewport DPI-aware con cero asignaciones en el bucle caliente.
- * 3. VisualStabilizationService: Estabilización anti-layout-shift (CLS) y sugerencias de composición GPU.
- * 4. MediaProtectionService: Detección de motor (Gecko/Blink) y precisión del puntero 1:1 en reproductores.
- * 5. ZoomExecutionEngine: Bucle caliente ultra-rápido, histéresis anti-vibración y rAF debouncer (16ms).
+ * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
+ * 2. ViewportMetricsService: Medición del viewport y cálculo proporcional de la escala.
+ * 3. VisualStabilizationService: Variables CSS informativas sin alterar estilos ajenos.
+ * 4. MediaProtectionService: Detección del motor y del estado de pantalla completa.
+ * 5. ZoomExecutionEngine: Aplicación idempotente, histéresis y agrupación mediante rAF.
  * 6. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
  */
 (function initializeAutoShrinkScriptScope() {
@@ -65,15 +66,14 @@
     thresholdZoomLevelUnder60Percent: 0.70,
     thresholdZoomLevelUnder40Percent: 0.55,
     thresholdZoomLevelUnder20Percent: 0.35,
-    isSmoothTransitionEnabled: false,
-    isProtectVideoPlayersEnabled: true,
     isResetInFullscreenEnabled: true,
     isSplitViewAdaptationEnabled: true
   });
 
   const CONFIGURATION_MODAL_OVERLAY_ID = 'auto-shrink-configuration-modal-overlay-v2';
-  const VISUAL_STABILIZATION_STYLE_ID = 'auto-shrink-visual-stabilization-styles';
-  const HYSTERESIS_THRESHOLD = 0.005; // 0.5% de tolerancia para evitar vibraciones de sub-píxel
+  const VISUAL_STABILIZATION_STYLE_ID = 'auto-shrink-visual-stabilization-styles-v5';
+  const MODAL_STYLE_ID = 'auto-shrink-modal-styles-v5';
+  const HYSTERESIS_THRESHOLD = 0.0025;
 
   // ============================================================================
   // 1. SERVICIO DE CONFIGURACIÓN Y SANEAMIENTO (ConfigurationService)
@@ -85,6 +85,7 @@
    */
   const ConfigurationService = (function () {
     const activeCache = Object.assign({}, DEFAULT_CONFIGURATION);
+    const valueChangeListenerIds = [];
     let sanitizedSnapshotCache = null;
 
     /**
@@ -128,15 +129,13 @@
 
       sanitizedSnapshotCache = Object.freeze({
         scalingMode: get('scalingMode') === SCALING_MODES.THRESHOLDS ? SCALING_MODES.THRESHOLDS : SCALING_MODES.CONTINUOUS,
-        referenceBaseWidthSetting: get('referenceBaseWidthSetting'),
+        referenceBaseWidthSetting: sanitizeReferenceBaseWidth(get('referenceBaseWidthSetting')),
         minimumZoomScaleLimit: minLimit,
         maximumZoomScaleLimit: maxLimit,
         thresholdZoomLevelUnder80Percent: sanitizeNumeric(get('thresholdZoomLevelUnder80Percent'), 0.85, minLimit, maxLimit),
         thresholdZoomLevelUnder60Percent: sanitizeNumeric(get('thresholdZoomLevelUnder60Percent'), 0.70, minLimit, maxLimit),
         thresholdZoomLevelUnder40Percent: sanitizeNumeric(get('thresholdZoomLevelUnder40Percent'), 0.55, minLimit, maxLimit),
         thresholdZoomLevelUnder20Percent: sanitizeNumeric(get('thresholdZoomLevelUnder20Percent'), 0.35, minLimit, maxLimit),
-        isSmoothTransitionEnabled: !!get('isSmoothTransitionEnabled'),
-        isProtectVideoPlayersEnabled: !!get('isProtectVideoPlayersEnabled'),
         isResetInFullscreenEnabled: !!get('isResetInFullscreenEnabled'),
         isSplitViewAdaptationEnabled: !!get('isSplitViewAdaptationEnabled')
       });
@@ -184,22 +183,48 @@
       return Math.max(minBound, Math.min(maxBound, parsed));
     }
 
-    loadAll();
+    function sanitizeReferenceBaseWidth(value) {
+      if (value === 'auto') return 'auto';
+      const parsed = parseInt(value, 10);
+      return Number.isFinite(parsed) ? Math.max(320, Math.min(10000, parsed)) : 'auto';
+    }
 
-    // Sincronización multi-pestaña
-    window.addEventListener('storage', (event) => {
-      if (event && event.key && Object.keys(DEFAULT_CONFIGURATION).includes(event.key)) {
-        loadAll();
-        ZoomExecutionEngine.scheduleFrameExecution();
+    function initializeSynchronization() {
+      loadAll();
+      if (typeof GM_addValueChangeListener !== 'function') return;
+
+      for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
+        try {
+          const listenerId = GM_addValueChangeListener(key, (_name, _oldValue, newValue, isRemote) => {
+            if (!isRemote) return;
+            activeCache[key] = newValue === undefined ? DEFAULT_CONFIGURATION[key] : newValue;
+            sanitizedSnapshotCache = null;
+            ZoomExecutionEngine.scheduleFrameExecution(true);
+          });
+          valueChangeListenerIds.push(listenerId);
+        } catch (e) { }
       }
-    }, { passive: true });
+    }
+
+    function destroy() {
+      if (typeof GM_removeValueChangeListener !== 'function') return;
+      for (const listenerId of valueChangeListenerIds) {
+        try {
+          GM_removeValueChangeListener(listenerId);
+        } catch (e) { }
+      }
+      valueChangeListenerIds.length = 0;
+    }
+
+    initializeSynchronization();
 
     return {
       get,
       getSanitizedConfig,
       set,
       resetAll,
-      sanitizeNumeric
+      sanitizeNumeric,
+      destroy
     };
   })();
 
@@ -208,7 +233,7 @@
   // ============================================================================
 
   /**
-   * Servicio encargado de calcular métricas del viewport con cero asignaciones de memoria en bucle caliente.
+   * Servicio encargado de calcular métricas estables del viewport y la pantalla de referencia.
    */
   const ViewportMetricsService = (function () {
 
@@ -230,33 +255,29 @@
      * @param {number} [currentViewportWidthPx] - Ancho actual del viewport.
      * @returns {number} Ancho base de referencia en píxeles.
      */
+    function getScreenWidth() {
+      try {
+        if (window.screen) {
+          const availableWidth = Number(window.screen.availWidth);
+          const totalWidth = Number(window.screen.width);
+          if (Number.isFinite(availableWidth) && availableWidth > 0) return availableWidth;
+          if (Number.isFinite(totalWidth) && totalWidth > 0) return totalWidth;
+        }
+      } catch (e) { }
+      return 0;
+    }
+
     function calculateReferenceBaseWidth(currentViewportWidthPx) {
       try {
-        const setting = ConfigurationService.get('referenceBaseWidthSetting');
+        const setting = ConfigurationService.getSanitizedConfig().referenceBaseWidthSetting;
         if (typeof setting === 'number' && setting > 0) return setting;
         if (typeof setting === 'string' && setting !== 'auto') {
           const parsed = parseInt(setting, 10);
           if (Number.isFinite(parsed) && parsed > 0) return parsed;
         }
 
-        let monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
-
-        if (window.devicePixelRatio && window.devicePixelRatio > 1.25 && window.screen.availWidth) {
-          monitorWidth = Math.max(monitorWidth, window.screen.availWidth);
-        }
-
-        const isAdaptationActive = ConfigurationService.get('isSplitViewAdaptationEnabled');
-        if (isAdaptationActive && currentViewportWidthPx) {
-          const ratioToMonitor = currentViewportWidthPx / monitorWidth;
-          if (ratioToMonitor <= 0.78) {
-            if (ratioToMonitor <= 0.38) {
-              return Math.max(400, monitorWidth / 3);
-            }
-            return Math.max(400, monitorWidth / 2);
-          }
-        }
-
-        return monitorWidth;
+        const screenWidth = getScreenWidth();
+        return screenWidth > 0 ? Math.max(currentViewportWidthPx || 0, screenWidth) : (currentViewportWidthPx || 1920);
       } catch (e) {
         return 1920;
       }
@@ -297,6 +318,7 @@
 
     return {
       isPinchZoomActive,
+      getScreenWidth,
       calculateReferenceBaseWidth,
       computeZoomScaleFactor
     };
@@ -307,7 +329,7 @@
   // ============================================================================
 
   /**
-   * Módulo especializado de estabilización visual anti-layout-shift (CLS) y sugerencias de composición GPU.
+   * Publica métricas de Auto-Shrink como variables CSS sin imponer reglas a la página.
    */
   const VisualStabilizationService = (function () {
 
@@ -316,49 +338,13 @@
      * @param {string} engineName - Nombre del motor del navegador ('gecko' o 'blink').
      * @returns {string} Código CSS optimizado.
      */
-    function buildStabilizationCssText(engineName) {
-      const engineSpecificRules = engineName === 'gecko'
-        ? `/* Reglas de suavizado de maquetación específicas para Firefox (Gecko) */
-           html { layout-smoothing: subpixel-antialiased !important; }`
-        : `/* Reglas de suavizado de maquetación específicas para Chromium (Blink) */
-           html { -webkit-font-smoothing: antialiased !important; }`;
-
+    function buildStabilizationCssText() {
       return `
-        /* Preservación de maquetación fluida anti-layout-shift (CLS) */
-        html {
-          min-height: 100% !important;
-          box-sizing: border-box !important;
-          overflow-x: hidden !important;
-        }
-
-        *, *::before, *::after {
-          box-sizing: inherit !important;
-        }
-
-        ${engineSpecificRules}
-
-        /* Estabilización de contenedores principales para acoplamiento de ventanas (Windows Snap) */
-        body, #app, #root, #__next, main, article, section, header, footer, nav, .container, .wrapper {
-          max-width: 100% !important;
-        }
-
-        /* Ajuste y alineación de elementos con posición fija o pegajosa */
-        [style*="position: fixed"], [style*="position: sticky"],
-        header[class*="header"], nav[class*="nav"], div[class*="top-bar"] {
-          max-width: 100% !important;
-        }
-
-        /* Contención de elementos anchos como tablas y bloques de código */
-        table, pre, code, iframe, canvas, svg, picture {
-          max-width: 100% !important;
-          overflow-x: auto !important;
-        }
-
-        /* Escalado fluido y adaptativo de medios e imágenes */
-        img, video {
-          max-width: 100% !important;
-          height: auto !important;
-          object-fit: contain;
+        /* Solamente propiedades propias: no se altera la maquetación de la página. */
+        :root {
+          --auto-shrink-scale: 1;
+          --auto-shrink-inv-scale: 1;
+          --auto-shrink-viewport-width: 100vw;
         }
       `;
     }
@@ -367,23 +353,14 @@
      * Inyecta dinámicamente las reglas de estabilización visual en el documento.
      * @param {string} engineName - Nombre del motor del navegador.
      */
-    function injectStabilizationStyles(engineName) {
+    function injectStabilizationStyles() {
       try {
         if (document.getElementById(VISUAL_STABILIZATION_STYLE_ID)) return;
-
-        const cssContent = buildStabilizationCssText(engineName);
-
-        if (typeof GM_addStyle === 'function') {
-          GM_addStyle(cssContent);
-        } else {
-          const styleElement = document.createElement('style');
-          styleElement.id = VISUAL_STABILIZATION_STYLE_ID;
-          styleElement.textContent = cssContent;
-          const targetParent = document.head || document.documentElement;
-          if (targetParent) {
-            targetParent.appendChild(styleElement);
-          }
-        }
+        const styleElement = document.createElement('style');
+        styleElement.id = VISUAL_STABILIZATION_STYLE_ID;
+        styleElement.textContent = buildStabilizationCssText();
+        const targetParent = document.head || document.documentElement;
+        if (targetParent) targetParent.appendChild(styleElement);
       } catch (e) {
         console.warn('[Auto-Shrink] Error inyectando hoja de estabilización visual:', e);
       }
@@ -402,7 +379,6 @@
       try {
         const zoomScaleString = scaleFactor.toFixed(4);
         const inverseScaleString = (1 / scaleFactor).toFixed(4);
-        const scrollbarWidthPx = Math.max(0, window.innerWidth - rootElement.clientWidth);
         const viewportHeightPx = window.innerHeight || 1080;
         const aspectRatioString = (viewportWidthPx / viewportHeightPx).toFixed(2);
         const isFullscreen = MediaProtectionService.isDocumentInFullscreenMode();
@@ -412,11 +388,8 @@
         rootElement.style.setProperty('--auto-shrink-viewport-width', viewportWidthPx + 'px');
         rootElement.style.setProperty('--auto-shrink-is-split-view', isSplitView ? '1' : '0');
         rootElement.style.setProperty('--auto-shrink-effective-base', referenceBasePx + 'px');
-        rootElement.style.setProperty('--auto-shrink-scrollbar-width', scrollbarWidthPx + 'px');
         rootElement.style.setProperty('--auto-shrink-aspect-ratio', aspectRatioString);
         rootElement.style.setProperty('--auto-shrink-is-fullscreen', isFullscreen ? '1' : '0');
-        rootElement.style.removeProperty('width');
-        rootElement.style.removeProperty('min-height');
       } catch (e) { }
     }
 
@@ -427,20 +400,13 @@
   })();
 
   // ============================================================================
-  // 4. SERVICIO DE PROTECCIÓN DE MEDIOS Y PUNTERO (MediaProtectionService)
+  // 4. SERVICIO DE ENTORNO Y PANTALLA COMPLETA (MediaProtectionService)
   // ============================================================================
 
   /**
-   * Servicio encargado de la compatibilidad por motor del navegador (Gecko vs Blink)
-   * y la inyección de reglas CSS para garantizar precisión 1:1 en eventos de puntero.
+   * Servicio encargado de detectar el motor del navegador y la pantalla completa.
    */
   const MediaProtectionService = (function () {
-    let currentActiveScaleFactor = 1.0;
-
-    function setScaleFactor(scaleFactor) {
-      currentActiveScaleFactor = scaleFactor;
-    }
-
     /**
      * Identifica el motor nativo del navegador para aplicar optimizaciones específicas.
      * @returns {string} 'gecko' (Firefox), 'blink' (Chrome/Edge/Brave) o 'generic'.
@@ -472,48 +438,15 @@
     }
 
     /**
-     * Aplica la estabilización visual y la protección de eventos de puntero.
+     * Instala una única vez las variables CSS propias del userscript.
      */
     function applyProtectionStyles() {
       try {
-        const engine = detectNativeBrowserEngine();
-        VisualStabilizationService.injectStabilizationStyles(engine);
-
-        if (!ConfigurationService.get('isProtectVideoPlayersEnabled')) return;
-
-        const mediaProtectionCss = `
-          /* Precisión absoluta del puntero en controles interactivos, reproductores y deslizadores */
-          .html5-video-player,
-          .html5-video-player .ytp-progress-bar-container,
-          .html5-video-player .ytp-chrome-bottom,
-          .vjs-control-bar,
-          [class*="video-player"],
-          [class*="media-player"],
-          [class*="seekbar"],
-          [class*="progress-bar"],
-          input[type="range"],
-          canvas,
-          svg {
-            pointer-events: auto !important;
-            touch-action: manipulation !important;
-          }
-        `;
-
-        if (typeof GM_addStyle === 'function') {
-          GM_addStyle(mediaProtectionCss);
-        } else {
-          const styleElement = document.createElement('style');
-          styleElement.textContent = mediaProtectionCss;
-          const targetParent = document.head || document.documentElement;
-          if (targetParent) {
-            targetParent.appendChild(styleElement);
-          }
-        }
+        VisualStabilizationService.injectStabilizationStyles();
       } catch (e) { }
     }
 
     return {
-      setScaleFactor,
       detectNativeBrowserEngine,
       isDocumentInFullscreenMode,
       applyProtectionStyles
@@ -525,17 +458,18 @@
   // ============================================================================
 
   /**
-   * Motor de ejecución atómico de zoom con cero asignaciones en bucle caliente,
-   * aceleración GPU y filtro de histéresis anti-vibración.
+   * Motor de ejecución de zoom con escrituras agrupadas y filtro de histéresis.
    */
   const ZoomExecutionEngine = (function () {
     let isAnimationFrameScheduled = false;
+    let isForcedApplicationPending = false;
     let animationFrameRequestId = null;
     let styleMutationObserver = null;
-    let elementResizeObserver = null;
     let isScriptApplyingZoomMutation = false;
     let lastAppliedZoomScaleString = null;
     let lastAppliedScaleValue = 1.0;
+    let originalInlineZoom = null;
+    let originalInlineZoomPriority = '';
 
     /**
      * Consulta el ancho válido del viewport navegando entre múltiples fuentes de respaldo.
@@ -554,7 +488,7 @@
     /**
      * Aplica la escala calculada asignando variables CSS y aplicando zoom nativo con filtro de histéresis.
      */
-    function applyViewportZoomScale() {
+    function applyViewportZoomScale(forceApplication) {
       if (document.hidden) return;
       if (ViewportMetricsService.isPinchZoomActive()) return;
 
@@ -565,8 +499,7 @@
         const config = ConfigurationService.getSanitizedConfig();
 
         if (config.isResetInFullscreenEnabled && MediaProtectionService.isDocumentInFullscreenMode()) {
-          MediaProtectionService.setScaleFactor(1.0);
-          if (lastAppliedZoomScaleString !== '1.0000') {
+          if (forceApplication || lastAppliedZoomScaleString !== '1.0000' || parseFloat(rootElement.style.zoom) !== 1) {
             isScriptApplyingZoomMutation = true;
             try {
               VisualStabilizationService.updateGlobalCssVariables(rootElement, 1.0, window.innerWidth || 1920, false, 1920);
@@ -583,24 +516,25 @@
         const currentViewportWidthPx = getValidViewportWidth();
         if (!currentViewportWidthPx) return;
 
-        const monitorWidth = (window.screen && window.screen.width) ? window.screen.width : 1920;
-        const isSplitView = config.isSplitViewAdaptationEnabled && (currentViewportWidthPx / monitorWidth) <= 0.78;
-
-        const effectiveMin = isSplitView ? Math.max(config.minimumZoomScaleLimit, 0.40) : config.minimumZoomScaleLimit;
-        const effectiveMax = isSplitView ? Math.min(config.maximumZoomScaleLimit, 1.00) : config.maximumZoomScaleLimit;
-
-        const referenceBaseWidthPx = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
+        const monitorWidth = ViewportMetricsService.getScreenWidth() || currentViewportWidthPx;
+        const viewportToScreenRatio = currentViewportWidthPx / monitorWidth;
+        const isSplitView = viewportToScreenRatio < 0.90;
+        const effectiveMin = config.minimumZoomScaleLimit;
+        const effectiveMax = config.maximumZoomScaleLimit;
+        const automaticReferenceWidth = ViewportMetricsService.calculateReferenceBaseWidth(currentViewportWidthPx);
+        const referenceBaseWidthPx = (!config.isSplitViewAdaptationEnabled && isSplitView && config.referenceBaseWidthSetting === 'auto')
+          ? currentViewportWidthPx
+          : automaticReferenceWidth;
         const lockedZoomScaleFactor = ViewportMetricsService.computeZoomScaleFactor(currentViewportWidthPx, referenceBaseWidthPx, effectiveMin, effectiveMax);
+        const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
+        const currentInlineZoom = parseFloat(rootElement.style.zoom);
+        const zoomWasOverwritten = !Number.isFinite(currentInlineZoom) || Math.abs(currentInlineZoom - lockedZoomScaleFactor) >= HYSTERESIS_THRESHOLD;
 
-        if (lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
+        if (!forceApplication && !zoomWasOverwritten && lastAppliedZoomScaleString !== null && Math.abs(lockedZoomScaleFactor - lastAppliedScaleValue) < HYSTERESIS_THRESHOLD) {
           return;
         }
 
-        const zoomScaleString = lockedZoomScaleFactor.toFixed(4);
-
-        MediaProtectionService.setScaleFactor(lockedZoomScaleFactor);
-
-        if (lastAppliedZoomScaleString === zoomScaleString && rootElement.style.zoom === zoomScaleString) {
+        if (!forceApplication && lastAppliedZoomScaleString === zoomScaleString && !zoomWasOverwritten) {
           return;
         }
 
@@ -614,16 +548,6 @@
             referenceBaseWidthPx
           );
 
-          if (config.isSmoothTransitionEnabled) {
-            if (!rootElement.style.transition.includes('zoom')) {
-              rootElement.style.transition = 'zoom 0.12s cubic-bezier(0.4, 0, 0.2, 1)';
-            }
-          } else if (rootElement.style.transition.includes('zoom')) {
-            rootElement.style.transition = rootElement.style.transition
-              .replace(/zoom\s*[\d\.]+\w*\s*[^,]*,?/g, '')
-              .trim();
-          }
-
           rootElement.style.setProperty('zoom', zoomScaleString, 'important');
           lastAppliedZoomScaleString = zoomScaleString;
           lastAppliedScaleValue = lockedZoomScaleFactor;
@@ -636,12 +560,15 @@
     /**
      * Programa la ejecución del zoom en el siguiente cuadro de animación (requestAnimationFrame).
      */
-    function scheduleFrameExecution() {
+    function scheduleFrameExecution(forceApplication) {
+      isForcedApplicationPending = isForcedApplicationPending || !!forceApplication;
       if (!isAnimationFrameScheduled) {
         animationFrameRequestId = requestAnimationFrame(() => {
-          applyViewportZoomScale();
+          const shouldForceApplication = isForcedApplicationPending;
           isAnimationFrameScheduled = false;
+          isForcedApplicationPending = false;
           animationFrameRequestId = null;
+          applyViewportZoomScale(shouldForceApplication);
         });
         isAnimationFrameScheduled = true;
       }
@@ -659,7 +586,10 @@
           if (isScriptApplyingZoomMutation) return;
           for (let i = 0; i < mutations.length; i++) {
             if (mutations[i].attributeName === 'style') {
-              scheduleFrameExecution();
+              const currentZoom = parseFloat(rootElement.style.zoom);
+              if (lastAppliedZoomScaleString !== null && (!Number.isFinite(currentZoom) || Math.abs(currentZoom - lastAppliedScaleValue) >= HYSTERESIS_THRESHOLD)) {
+                scheduleFrameExecution(true);
+              }
               break;
             }
           }
@@ -673,22 +603,6 @@
     }
 
     /**
-     * Inicializa ResizeObserver para rastrear cambios en barras laterales de SPAs.
-     */
-    function initializeResizeObserver() {
-      try {
-        const rootElement = document.documentElement;
-        if (!rootElement || elementResizeObserver || typeof ResizeObserver === 'undefined') return;
-
-        elementResizeObserver = new ResizeObserver(() => {
-          scheduleFrameExecution();
-        });
-
-        elementResizeObserver.observe(rootElement);
-      } catch (e) { }
-    }
-
-    /**
      * Limpia observadores y solicitudes de cuadro de animación.
      */
     function destroy() {
@@ -696,13 +610,19 @@
         styleMutationObserver.disconnect();
         styleMutationObserver = null;
       }
-      if (elementResizeObserver) {
-        elementResizeObserver.disconnect();
-        elementResizeObserver = null;
-      }
       if (animationFrameRequestId !== null) {
         cancelAnimationFrame(animationFrameRequestId);
         animationFrameRequestId = null;
+      }
+      isAnimationFrameScheduled = false;
+      isForcedApplicationPending = false;
+      const rootElement = document.documentElement;
+      if (rootElement && lastAppliedZoomScaleString !== null) {
+        if (originalInlineZoom === '') rootElement.style.removeProperty('zoom');
+        else rootElement.style.setProperty('zoom', originalInlineZoom, originalInlineZoomPriority);
+        for (const propertyName of Array.from(rootElement.style)) {
+          if (propertyName.startsWith('--auto-shrink-')) rootElement.style.removeProperty(propertyName);
+        }
       }
     }
 
@@ -710,7 +630,12 @@
       applyViewportZoomScale,
       scheduleFrameExecution,
       initializeStyleMutationProtectionObserver,
-      initializeResizeObserver,
+      rememberOriginalStyle() {
+        const rootElement = document.documentElement;
+        if (!rootElement || originalInlineZoom !== null) return;
+        originalInlineZoom = rootElement.style.getPropertyValue('zoom');
+        originalInlineZoomPriority = rootElement.style.getPropertyPriority('zoom');
+      },
       destroy
     };
   })();
@@ -724,6 +649,7 @@
    */
   const UserInterfaceController = (function () {
     function injectModalStyles() {
+      if (document.getElementById(MODAL_STYLE_ID)) return;
       const modalStylesCssText = `
         #${CONFIGURATION_MODAL_OVERLAY_ID} {
           position: fixed !important;
@@ -878,16 +804,11 @@
       `;
 
       try {
-        if (typeof GM_addStyle === 'function') {
-          GM_addStyle(modalStylesCssText);
-        } else {
-          const styleElement = document.createElement('style');
-          styleElement.textContent = modalStylesCssText;
-          const targetParent = document.head || document.documentElement;
-          if (targetParent) {
-            targetParent.appendChild(styleElement);
-          }
-        }
+        const styleElement = document.createElement('style');
+        styleElement.id = MODAL_STYLE_ID;
+        styleElement.textContent = modalStylesCssText;
+        const targetParent = document.head || document.documentElement;
+        if (targetParent) targetParent.appendChild(styleElement);
       } catch (e) { }
     }
 
@@ -929,7 +850,7 @@
           <div class="as-dialog-card">
             <h2>
               <span>⚙️ Configuración Auto-Shrink</span>
-              <span style="font-size:12px;color:#64748b;font-weight:normal;">v4.0.0</span>
+              <span style="font-size:12px;color:#64748b;font-weight:normal;">v5.0.0</span>
             </h2>
 
             <!-- Insignias de Estado en Tiempo Real -->
@@ -941,15 +862,11 @@
 
             <!-- SECCIÓN: VISTA DIVIDIDA Y PANTALLA COMPLETA -->
             <div class="as-config-section">
-              <div class="as-section-title">Vista Dividida y Precisión del Puntero</div>
+              <div class="as-section-title">Vista Dividida y Pantalla Completa</div>
               <div class="as-field-group">
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-split-view" ${config.isSplitViewAdaptationEnabled ? 'checked' : ''}>
                   📱 Adaptación Inteligente para Vista Dividida (Firefox / Chrome / Edge / Windows Snap)
-                </label>
-                <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-protect-video" ${config.isProtectVideoPlayersEnabled ? 'checked' : ''}>
-                  🛡️ Precisión del ratón 1:1 en reproductores, controles y deslizadores
                 </label>
                 <label class="as-checkbox-label">
                   <input type="checkbox" id="as-checkbox-reset-fullscreen" ${config.isResetInFullscreenEnabled ? 'checked' : ''}>
@@ -1022,16 +939,6 @@
               </div>
             </div>
 
-            <!-- SECCIÓN: OPCIONES AVANZADAS -->
-            <div class="as-config-section">
-              <div class="as-field-group">
-                <label class="as-checkbox-label">
-                  <input type="checkbox" id="as-checkbox-smooth-transition" ${config.isSmoothTransitionEnabled ? 'checked' : ''}>
-                  Activar transición suave al cambiar de tamaño
-                </label>
-              </div>
-            </div>
-
             <div class="as-button-actions">
               <button class="btn-reset-action" id="as-button-reset">Restablecer</button>
               <button class="btn-cancel-action" id="as-button-cancel">Cancelar</button>
@@ -1097,8 +1004,6 @@
           const s40 = ConfigurationService.sanitizeNumeric(overlayElement.querySelector('#as-input-threshold-40').value, 55, 10, 150) / 100;
           const s20 = ConfigurationService.sanitizeNumeric(overlayElement.querySelector('#as-input-threshold-20').value, 35, 10, 150) / 100;
 
-          const isSmooth = overlayElement.querySelector('#as-checkbox-smooth-transition').checked;
-          const isProtect = overlayElement.querySelector('#as-checkbox-protect-video').checked;
           const isFullscreen = overlayElement.querySelector('#as-checkbox-reset-fullscreen').checked;
           const isSplitView = overlayElement.querySelector('#as-checkbox-split-view').checked;
 
@@ -1110,8 +1015,6 @@
           ConfigurationService.set('thresholdZoomLevelUnder60Percent', s60);
           ConfigurationService.set('thresholdZoomLevelUnder40Percent', s40);
           ConfigurationService.set('thresholdZoomLevelUnder20Percent', s20);
-          ConfigurationService.set('isSmoothTransitionEnabled', isSmooth);
-          ConfigurationService.set('isProtectVideoPlayersEnabled', isProtect);
           ConfigurationService.set('isResetInFullscreenEnabled', isFullscreen);
           ConfigurationService.set('isSplitViewAdaptationEnabled', isSplitView);
 
@@ -1143,7 +1046,7 @@
     function registerMenuCommands() {
       try {
         if (typeof GM_registerMenuCommand === 'function') {
-          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v4.0', renderModal);
+          GM_registerMenuCommand('⚙️ Configurar Auto-Shrink v5.0', renderModal);
           GM_registerMenuCommand('🔄 Restablecer Valores', () => {
             ConfigurationService.resetAll();
             MediaProtectionService.applyProtectionStyles();
@@ -1166,7 +1069,13 @@
   // 7. CICLO DE VIDA GLOBAL Y ENGANCHES MULTIETAPA
   // ============================================================================
 
+  let isEngineInitialized = false;
+
   function initializeEngine() {
+    if (isEngineInitialized || !document.documentElement) return;
+    isEngineInitialized = true;
+
+    ZoomExecutionEngine.rememberOriginalStyle();
     try {
       MediaProtectionService.applyProtectionStyles();
     } catch (e) { }
@@ -1180,22 +1089,41 @@
     } catch (e) { }
 
     try {
-      ZoomExecutionEngine.initializeResizeObserver();
-    } catch (e) { }
-
-    try {
       UserInterfaceController.registerMenuCommands();
     } catch (e) { }
   }
 
   function destroyEngineLifecycle() {
+    if (!isEngineInitialized) return;
+    isEngineInitialized = false;
     try {
       ZoomExecutionEngine.destroy();
+      ConfigurationService.destroy();
       window.removeEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution);
+      window.removeEventListener('orientationchange', ZoomExecutionEngine.scheduleFrameExecution);
+      window.removeEventListener('pageshow', handlePageShow);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       document.removeEventListener('fullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
       document.removeEventListener('webkitfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
       document.removeEventListener('mozfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution);
+      if (window.screen && window.screen.orientation) {
+        window.screen.orientation.removeEventListener('change', ZoomExecutionEngine.scheduleFrameExecution);
+      }
     } catch (e) { }
+  }
+
+  function handleVisibilityChange() {
+    if (!document.hidden) ZoomExecutionEngine.scheduleFrameExecution(true);
+  }
+
+  function handlePageShow() {
+    if (!isEngineInitialized) initializeEngine();
+    ZoomExecutionEngine.scheduleFrameExecution(true);
+  }
+
+  function handlePageHide(event) {
+    if (!event.persisted) destroyEngineLifecycle();
   }
 
   if (document.documentElement) {
@@ -1208,26 +1136,22 @@
     initializeEngine();
   }
 
-  window.addEventListener('load', initializeEngine, { once: true });
-
-  setTimeout(initializeEngine, 50);
-  setTimeout(initializeEngine, 300);
-  setTimeout(initializeEngine, 1000);
-
   window.addEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  window.addEventListener('pageshow', handlePageShow, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
+  }
   if (window.screen && window.screen.orientation) {
     window.screen.orientation.addEventListener('change', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
   }
   window.addEventListener('orientationchange', ZoomExecutionEngine.scheduleFrameExecution, { passive: true });
 
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) ZoomExecutionEngine.applyViewportZoomScale();
-  }, { passive: true });
+  document.addEventListener('visibilitychange', handleVisibilityChange, { passive: true });
 
   document.addEventListener('fullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
   document.addEventListener('webkitfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
   document.addEventListener('mozfullscreenchange', ZoomExecutionEngine.applyViewportZoomScale, { passive: true });
 
-  window.addEventListener('pagehide', destroyEngineLifecycle, { once: true });
+  window.addEventListener('pagehide', handlePageHide, { once: true });
   window.addEventListener('beforeunload', destroyEngineLifecycle, { once: true });
 })();
