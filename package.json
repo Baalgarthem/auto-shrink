@@ -1,6 +1,6 @@
 {
   "name": "auto-shrink",
-  "version": "5.6.1",
+  "version": "5.6.2",
   "description": "Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo.",
   "main": "dist/auto-shrink.user.js",
   "directories": {

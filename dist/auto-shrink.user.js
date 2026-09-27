@@ -2,7 +2,7 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.6.1
+// @version      5.6.2
 // @description  Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo (XVideos, Pornhub, YouTube, etc.).
 // @author       Baalgarthem
 // @match        *://*/*
