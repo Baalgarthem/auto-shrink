@@ -1,71 +1,83 @@
-import { PointerPrecisionService } from './pointer.js';
-import { BrowserEnvironmentService } from './environment.js';
 /**
-   * Servicio dedicado a sincronizar las métricas de desplazamiento (scrollTop, scrollLeft)
-   * entre el viewport visual y la disposición lógica del documento cuando se aplica CSS zoom.
+ * Servicio dedicado a sincronizar las métricas de desplazamiento (scrollTop, scrollLeft)
+ * entre el viewport visual y la disposición lógica del documento cuando se aplica CSS zoom,
+ * implementado con inyección de dependencias.
+ */
+export class ScrollSynchronizationService {
+  /**
+   * @param {Object} [dependencies]
+   * @param {Object} [dependencies.pointerService] - Instancia de PointerPrecisionService.
+   * @param {Window} [dependencies.windowProvider] - Objeto window global.
+   * @param {Document} [dependencies.documentProvider] - Objeto document global.
    */
-  export const ScrollSynchronizationService = (function () {
-    let isInitialized = false;
-    let frameRequestId = null;
-    let lastScrollY = -1;
-    let lastScrollX = -1;
+  constructor(dependencies = {}) {
+    this.pointerService = dependencies.pointerService || null;
+    this.windowProvider = dependencies.windowProvider || (typeof window !== 'undefined' ? window : null);
+    this.documentProvider = dependencies.documentProvider || (typeof document !== 'undefined' ? document : null);
 
-    function synchronizeScrollMetrics() {
-      frameRequestId = null;
-      if (document.hidden) return;
+    this.isInitialized = false;
+    this.frameRequestId = null;
+    this.lastScrollY = -1;
+    this.lastScrollX = -1;
 
-      try {
-        const rootElement = document.documentElement;
-        if (!rootElement) return;
+    this.boundSynchronizeScrollMetrics = this.synchronizeScrollMetrics.bind(this);
+    this.boundOnScrollHandler = this.onScrollHandler.bind(this);
+  }
 
-        const currentScrollY = window.scrollY || rootElement.scrollTop || 0;
-        const currentScrollX = window.scrollX || rootElement.scrollLeft || 0;
+  synchronizeScrollMetrics() {
+    this.frameRequestId = null;
+    const doc = this.documentProvider;
+    const win = this.windowProvider;
+    if (!doc || doc.hidden) return;
 
-        if (Math.abs(currentScrollY - lastScrollY) < 0.5 && Math.abs(currentScrollX - lastScrollX) < 0.5) {
-          return;
-        }
+    try {
+      const rootElement = doc.documentElement;
+      if (!rootElement) return;
 
-        lastScrollY = currentScrollY;
-        lastScrollX = currentScrollX;
+      const currentScrollY = (win && win.scrollY) || rootElement.scrollTop || 0;
+      const currentScrollX = (win && win.scrollX) || rootElement.scrollLeft || 0;
 
-        const scale = PointerPrecisionService.readInlineScale(rootElement) || 1;
-        const visualScrollY = Math.round(currentScrollY / scale);
-        const visualScrollX = Math.round(currentScrollX / scale);
-
-        rootElement.style.setProperty('--auto-shrink-scroll-top', `${currentScrollY}px`);
-        rootElement.style.setProperty('--auto-shrink-scroll-left', `${currentScrollX}px`);
-        rootElement.style.setProperty('--auto-shrink-visual-scroll-top', `${visualScrollY}px`);
-        rootElement.style.setProperty('--auto-shrink-visual-scroll-left', `${visualScrollX}px`);
-        rootElement.style.setProperty('--auto-shrink-effective-scale', String(scale));
-      } catch (e) { }
-    }
-
-    function onScrollHandler() {
-      if (frameRequestId === null) {
-        frameRequestId = requestAnimationFrame(synchronizeScrollMetrics);
+      if (Math.abs(currentScrollY - this.lastScrollY) < 0.5 && Math.abs(currentScrollX - this.lastScrollX) < 0.5) {
+        return;
       }
-    }
 
-    function initialize() {
-      if (isInitialized) return;
-      isInitialized = true;
-      window.addEventListener('scroll', onScrollHandler, { capture: true, passive: true });
-      synchronizeScrollMetrics();
-    }
+      this.lastScrollY = currentScrollY;
+      this.lastScrollX = currentScrollX;
 
-    function destroy() {
-      if (!isInitialized) return;
-      isInitialized = false;
-      if (frameRequestId !== null) {
-        cancelAnimationFrame(frameRequestId);
-        frameRequestId = null;
-      }
-      window.removeEventListener('scroll', onScrollHandler, true);
-    }
+      const scale = (this.pointerService ? this.pointerService.readInlineScale(rootElement) : parseFloat(rootElement.style.getPropertyValue('zoom'))) || 1;
+      const visualScrollY = Math.round(currentScrollY / scale);
+      const visualScrollX = Math.round(currentScrollX / scale);
 
-    return {
-      initialize,
-      synchronizeScrollMetrics,
-      destroy
-    };
-  })();
+      rootElement.style.setProperty('--auto-shrink-scroll-top', `${currentScrollY}px`);
+      rootElement.style.setProperty('--auto-shrink-scroll-left', `${currentScrollX}px`);
+      rootElement.style.setProperty('--auto-shrink-visual-scroll-top', `${visualScrollY}px`);
+      rootElement.style.setProperty('--auto-shrink-visual-scroll-left', `${visualScrollX}px`);
+      rootElement.style.setProperty('--auto-shrink-effective-scale', String(scale));
+    } catch (e) { }
+  }
+
+  onScrollHandler() {
+    if (this.frameRequestId === null && this.windowProvider) {
+      this.frameRequestId = this.windowProvider.requestAnimationFrame(this.boundSynchronizeScrollMetrics);
+    }
+  }
+
+  initialize() {
+    if (this.isInitialized || !this.windowProvider) return;
+    this.isInitialized = true;
+    this.windowProvider.addEventListener('scroll', this.boundOnScrollHandler, { capture: true, passive: true });
+    this.synchronizeScrollMetrics();
+  }
+
+  destroy() {
+    if (!this.isInitialized) return;
+    this.isInitialized = false;
+    if (this.frameRequestId !== null && this.windowProvider) {
+      this.windowProvider.cancelAnimationFrame(this.frameRequestId);
+      this.frameRequestId = null;
+    }
+    if (this.windowProvider) {
+      this.windowProvider.removeEventListener('scroll', this.boundOnScrollHandler, true);
+    }
+  }
+}

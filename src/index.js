@@ -2,8 +2,8 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.6.2
-// @description  Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo (XVideos, Pornhub, YouTube, etc.).
+// @version      5.7.1
+// @description  Ajusta automáticamente el zoom al ancho disponible, detecta vista dividida (Split-View) ampliando al máximo, sincroniza el scroll y corrige coordenadas multimedia (XVideos, Pornhub, YouTube, etc.).
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
@@ -19,127 +19,55 @@
 // ==/UserScript==
 
 /**
- * Auto-Shrink Userscript v5.6.0 - Escalado automático, scroll sincronizado y precisión multimedia
+ * Auto-Shrink Userscript v5.7.0 - Arquitectura DI & Detección de Vista Dividida
  * ------------------------------------------------------------------------------------------
- * Estructura dividida en 7 servicios modulares especializados:
- * 1. ConfigurationService: Configuración saneada y sincronización real entre pestañas.
- * 2. ViewportMetricsService: Medición del viewport y cálculo proporcional de la escala.
- * 3. PointerPrecisionService: Escala nativa única para pintura, hit-testing y etiquetas de tiempo.
- * 4. ScrollSynchronizationService: Sincronización de desplazamientos lógicos y visuales (scrollTop/scrollLeft).
- * 5. BrowserEnvironmentService: Detección del motor y del estado de pantalla completa.
- * 6. ZoomExecutionEngine: Aplicación idempotente, histéresis y agrupación mediante rAF.
- * 7. UserInterfaceController: Ventana modal emergente con insignias de estado en tiempo real.
+ * Estructura dividida en 8 servicios interconectados mediante Inyección de Dependencias:
+ * 1. ConfigurationService: Configuración saneada e inyección de almacenamiento persistente.
+ * 2. ViewportMetricsService: Medición del viewport y métricas del sistema.
+ * 3. SplitViewDetectorService: Detección especializada de vista dividida y ampliación al máximo.
+ * 4. BrowserEnvironmentService: Detección del motor nativo y pantalla completa.
+ * 5. PointerPrecisionService: Corrección de coordenadas y etiquetas multimedia.
+ * 6. ScrollSynchronizationService: Sincronización de scroll visual y lógico.
+ * 7. ZoomExecutionEngine: Motor central de aplicación de zoom con histéresis y rAF.
+ * 8. UserInterfaceController: Ventana modal emergente y menú de comandos.
+ * 
+ * Contenedor Orquestador: ApplicationContainer (src/container.js).
  */
 
-import { ConfigurationService } from './config/configuration.js';
-import { PointerPrecisionService } from './core/pointer.js';
-import { ScrollSynchronizationService } from './core/scroll.js';
-import { BrowserEnvironmentService } from './core/environment.js';
-import { ZoomExecutionEngine } from './core/engine.js';
-import { UserInterfaceController } from './ui/interface.js';
+import { ApplicationContainer } from './container.js';
 
 (function initializeAutoShrinkScriptScope() {
   'use strict';
+
+  // Guardián de seguridad: Evitar ejecución dentro de iFrames anidados o restringidos
   try {
     if (window.top !== window.self) return;
   } catch (e) {
     return;
   }
-  
-let isEngineInitialized = false;
 
-  function initializeEngine() {
-    if (isEngineInitialized || !document.documentElement) return;
-    isEngineInitialized = true;
-
-    ZoomExecutionEngine.rememberOriginalStyle();
-    PointerPrecisionService.initializePointerCorrection();
-    try {
-      ScrollSynchronizationService.initialize();
-    } catch (e) { }
-    try {
-      ZoomExecutionEngine.applyViewportZoomScale();
-    } catch (e) { }
-
-    try {
-      ZoomExecutionEngine.initializeStyleMutationProtectionObserver();
-    } catch (e) { }
-
-    try {
-      UserInterfaceController.registerMenuCommands();
-    } catch (e) { }
-  }
-
-  function destroyEngineLifecycle() {
-    if (!isEngineInitialized) return;
-    isEngineInitialized = false;
-    try {
-      ZoomExecutionEngine.destroy();
-      PointerPrecisionService.destroy();
-      ScrollSynchronizationService.destroy();
-      ConfigurationService.destroy();
-      window.removeEventListener('resize', handleViewportResize);
-      window.removeEventListener('orientationchange', handleEnvironmentChange);
-      window.removeEventListener('pageshow', handlePageShow);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      document.removeEventListener('fullscreenchange', handleEnvironmentChange);
-      document.removeEventListener('webkitfullscreenchange', handleEnvironmentChange);
-      document.removeEventListener('mozfullscreenchange', handleEnvironmentChange);
-      if (window.visualViewport) window.visualViewport.removeEventListener('resize', handleViewportResize);
-      if (window.screen && window.screen.orientation) {
-        window.screen.orientation.removeEventListener('change', handleEnvironmentChange);
-      }
-    } catch (e) { }
-  }
-
-  function handleVisibilityChange() {
-    if (!document.hidden) ZoomExecutionEngine.scheduleFrameExecution(true);
-  }
-
-  function handleViewportResize() {
-    ZoomExecutionEngine.scheduleFrameExecution(false);
-  }
-
-  function handleEnvironmentChange() {
-    ZoomExecutionEngine.scheduleFrameExecution(true);
-  }
-
-  function handlePageShow() {
-    if (!isEngineInitialized) initializeEngine();
-    ZoomExecutionEngine.scheduleFrameExecution(true);
-  }
-
-  function handlePageHide(event) {
-    if (!event.persisted) destroyEngineLifecycle();
-  }
+  // Instanciar el Contenedor de Inyección de Dependencias
+  const container = new ApplicationContainer({
+    windowProvider: typeof window !== 'undefined' ? window : null,
+    documentProvider: typeof document !== 'undefined' ? document : null,
+    screenProvider: typeof screen !== 'undefined' ? screen : null,
+    unsafeWindowProvider: typeof unsafeWindow !== 'undefined' ? unsafeWindow : null,
+    getValue: typeof GM_getValue === 'function' ? GM_getValue : null,
+    setValue: typeof GM_setValue === 'function' ? GM_setValue : null,
+    addValueChangeListener: typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null,
+    removeValueChangeListener: typeof GM_removeValueChangeListener === 'function' ? GM_removeValueChangeListener : null,
+    menuRegisterer: typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : null
+  });
 
   if (document.documentElement) {
-    initializeEngine();
+    container.initialize();
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeEngine, { once: true });
+    document.addEventListener('DOMContentLoaded', () => container.initialize(), { once: true });
   } else {
-    initializeEngine();
+    container.initialize();
   }
 
-  window.addEventListener('resize', handleViewportResize, { passive: true });
-  window.addEventListener('pageshow', handlePageShow, { passive: true });
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', handleViewportResize, { passive: true });
-  }
-  if (window.screen && window.screen.orientation) {
-    window.screen.orientation.addEventListener('change', handleEnvironmentChange, { passive: true });
-  }
-  window.addEventListener('orientationchange', handleEnvironmentChange, { passive: true });
-
-  document.addEventListener('visibilitychange', handleVisibilityChange, { passive: true });
-
-  document.addEventListener('fullscreenchange', handleEnvironmentChange, { passive: true });
-  document.addEventListener('webkitfullscreenchange', handleEnvironmentChange, { passive: true });
-  document.addEventListener('mozfullscreenchange', handleEnvironmentChange, { passive: true });
-
-  window.addEventListener('pagehide', handlePageHide, { once: true });
-  window.addEventListener('beforeunload', destroyEngineLifecycle, { once: true });
-
+  window.addEventListener('beforeunload', () => container.destroy(), { once: true });
 })();
