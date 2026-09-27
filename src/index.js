@@ -2,13 +2,13 @@
 // @name         Auto-Shrink
 // @namespace    https://github.com/Baalgarthem/auto-shrink
 // @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
-// @version      5.6.0
+// @version      5.6.1
 // @description  Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo (XVideos, Pornhub, YouTube, etc.).
 // @author       Baalgarthem
 // @match        *://*/*
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js
-// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/auto-shrink.user.js
+// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/dist/auto-shrink.user.js
+// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/dist/auto-shrink.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -16,7 +16,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @run-at       document-start
-// ==UserScript==
+// ==/UserScript==
 
 /**
  * Auto-Shrink Userscript v5.6.0 - Escalado automático, scroll sincronizado y precisión multimedia

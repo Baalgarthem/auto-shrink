@@ -1,3 +1,24 @@
+// ==UserScript==
+// @name         Auto-Shrink
+// @namespace    https://github.com/Baalgarthem/auto-shrink
+// @icon         https://github.com/Baalgarthem/auto-shrink/raw/refs/heads/principal/media/main_icon.ico
+// @version      5.6.1
+// @description  Ajusta automáticamente el zoom al ancho disponible, sincroniza el scroll lógico y visual y corrige coordenadas en controles multimedia y etiquetas de tiempo (XVideos, Pornhub, YouTube, etc.).
+// @author       Baalgarthem
+// @match        *://*/*
+// @noframes
+// @updateURL    https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/dist/auto-shrink.user.js
+// @downloadURL  https://raw.githubusercontent.com/Baalgarthem/auto-shrink/principal/dist/auto-shrink.user.js
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
+// @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
+// @run-at       document-start
+// ==/UserScript==
+
+
 (() => {
   var __getOwnPropNames = Object.getOwnPropertyNames;
   var __esm = (fn, res, err) => function __init() {
@@ -16,7 +37,9 @@
     }
   };
 
-  // src/config/constants.js
+/* ════════════════════════════════════════════════════════════ */
+/*              MÓDULO: src/config/constants.js               */
+/* ════════════════════════════════════════════════════════════ */
   var SCALING_MODES, DEFAULT_CONFIGURATION, CONFIGURATION_KEYS, CONFIGURATION_MODAL_OVERLAY_ID, MODAL_STYLE_ID, SCALE_UPDATE_HYSTERESIS, SCALE_SYNCHRONIZATION_EPSILON, SCALE_DECIMAL_FACTOR, BREAKPOINT_HYSTERESIS;
   var init_constants = __esm({
     "src/config/constants.js"() {
@@ -47,7 +70,9 @@
     }
   });
 
-  // src/core/metrics.js
+/* ════════════════════════════════════════════════════════════ */
+/*                MÓDULO: src/core/metrics.js                 */
+/* ════════════════════════════════════════════════════════════ */
   var ViewportMetricsService2;
   var init_metrics = __esm({
     "src/core/metrics.js"() {
@@ -121,7 +146,9 @@
     }
   });
 
-  // src/core/pointer.js
+/* ════════════════════════════════════════════════════════════ */
+/*                MÓDULO: src/core/pointer.js                 */
+/* ════════════════════════════════════════════════════════════ */
   var PointerPrecisionService;
   var init_pointer = __esm({
     "src/core/pointer.js"() {
@@ -682,7 +709,9 @@
     }
   });
 
-  // src/core/environment.js
+/* ════════════════════════════════════════════════════════════ */
+/*              MÓDULO: src/core/environment.js               */
+/* ════════════════════════════════════════════════════════════ */
   var BrowserEnvironmentService2;
   var init_environment = __esm({
     "src/core/environment.js"() {
@@ -711,7 +740,9 @@
     }
   });
 
-  // src/core/scroll.js
+/* ════════════════════════════════════════════════════════════ */
+/*                 MÓDULO: src/core/scroll.js                 */
+/* ════════════════════════════════════════════════════════════ */
   var ScrollSynchronizationService;
   var init_scroll = __esm({
     "src/core/scroll.js"() {
@@ -775,7 +806,9 @@
     }
   });
 
-  // src/ui/interface.js
+/* ════════════════════════════════════════════════════════════ */
+/*                MÓDULO: src/ui/interface.js                 */
+/* ════════════════════════════════════════════════════════════ */
   var UserInterfaceController;
   var init_interface = __esm({
     "src/ui/interface.js"() {
@@ -1179,7 +1212,9 @@
     }
   });
 
-  // src/core/engine.js
+/* ════════════════════════════════════════════════════════════ */
+/*                 MÓDULO: src/core/engine.js                 */
+/* ════════════════════════════════════════════════════════════ */
   var ZoomExecutionEngine;
   var init_engine = __esm({
     "src/core/engine.js"() {
@@ -1335,7 +1370,9 @@
     }
   });
 
-  // src/config/configuration.js
+/* ════════════════════════════════════════════════════════════ */
+/*            MÓDULO: src/config/configuration.js             */
+/* ════════════════════════════════════════════════════════════ */
   var ConfigurationService;
   var init_configuration = __esm({
     "src/config/configuration.js"() {
@@ -1460,7 +1497,9 @@
     }
   });
 
-  // src/index.js
+/* ════════════════════════════════════════════════════════════ */
+/*                    MÓDULO: src/index.js                    */
+/* ════════════════════════════════════════════════════════════ */
   var require_index = __commonJS({
     "src/index.js"() {
       init_configuration();
